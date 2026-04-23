@@ -19,12 +19,18 @@ export interface MemoryContext {
 }
 
 export type ModelMode = "local" | "cloud";
+export type ProviderType = "openai" | "ollama";
 
-interface Settings {
+export interface ProviderConfig {
+  provider: ProviderType;
   apiUrl: string;
   apiKey: string;
-  localModel: string;
-  cloudModel: string;
+  model: string;
+}
+
+interface Settings {
+  local: ProviderConfig;
+  cloud: ProviderConfig;
   systemPrompt: string;
 }
 
@@ -32,6 +38,7 @@ interface AppState {
   // Settings
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
+  updateProvider: (mode: ModelMode, patch: Partial<ProviderConfig>) => void;
 
   // Mode
   mode: ModelMode;
@@ -73,19 +80,36 @@ const seedMemories: MemoryContext[] = [
   },
 ];
 
+const defaultSettings: Settings = {
+  local: {
+    provider: "ollama",
+    apiUrl: "http://localhost:11434",
+    apiKey: "",
+    model: "llama3.1:8b",
+  },
+  cloud: {
+    provider: "openai",
+    apiUrl: "https://your-tunnel.example.com/v1",
+    apiKey: "",
+    model: "gpt-4o-mini",
+  },
+  systemPrompt:
+    "You are a helpful, concise personal AI assistant. Use markdown when useful.",
+};
+
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
-      settings: {
-        apiUrl: "https://your-tunnel.example.com/v1",
-        apiKey: "",
-        localModel: "llama-3.1-8b-instruct",
-        cloudModel: "gpt-4o-mini",
-        systemPrompt:
-          "You are a helpful, concise personal AI assistant. Use markdown when useful.",
-      },
+      settings: defaultSettings,
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
+      updateProvider: (mode, patch) =>
+        set((s) => ({
+          settings: {
+            ...s.settings,
+            [mode]: { ...s.settings[mode], ...patch },
+          },
+        })),
 
       mode: "local",
       setMode: (mode) => set({ mode }),
@@ -118,6 +142,30 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "ai-assistant-store",
+      version: 2,
+      migrate: (persisted: any, version) => {
+        if (!persisted) return persisted;
+        if (version < 2 && persisted.settings) {
+          // Migrate old flat shape -> new local/cloud providers
+          const old = persisted.settings;
+          persisted.settings = {
+            local: {
+              provider: "openai",
+              apiUrl: old.apiUrl ?? defaultSettings.local.apiUrl,
+              apiKey: old.apiKey ?? "",
+              model: old.localModel ?? defaultSettings.local.model,
+            },
+            cloud: {
+              provider: "openai",
+              apiUrl: old.apiUrl ?? defaultSettings.cloud.apiUrl,
+              apiKey: old.apiKey ?? "",
+              model: old.cloudModel ?? defaultSettings.cloud.model,
+            },
+            systemPrompt: old.systemPrompt ?? defaultSettings.systemPrompt,
+          };
+        }
+        return persisted;
+      },
       partialize: (s) => ({
         settings: s.settings,
         mode: s.mode,
