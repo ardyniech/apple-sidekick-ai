@@ -3,11 +3,19 @@ import { persist } from "zustand/middleware";
 
 export type ChatRole = "user" | "assistant" | "system";
 
+export interface ReActStep {
+  thought?: string;
+  action?: string;
+  actionInput?: string;
+  observation?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: number;
+  steps?: ReActStep[];
 }
 
 export interface MemoryContext {
@@ -32,6 +40,10 @@ interface Settings {
   local: ProviderConfig;
   cloud: ProviderConfig;
   systemPrompt: string;
+  /** Number of recent messages sent back to the model as short-term memory. */
+  maxContextMessages: number;
+  /** Enable ReAct agentic workflow (Thought/Action/Observation/Final Answer). */
+  agenticMode: boolean;
 }
 
 interface AppState {
@@ -95,6 +107,8 @@ const defaultSettings: Settings = {
   },
   systemPrompt:
     "You are a helpful, concise personal AI assistant. Use markdown when useful.",
+  maxContextMessages: 20,
+  agenticMode: true,
 };
 
 export const useAppStore = create<AppState>()(
@@ -142,7 +156,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "ai-assistant-store",
-      version: 2,
+      version: 3,
       migrate: (persisted: any, version) => {
         if (!persisted) return persisted;
         if (version < 2 && persisted.settings) {
@@ -162,7 +176,13 @@ export const useAppStore = create<AppState>()(
               model: old.cloudModel ?? defaultSettings.cloud.model,
             },
             systemPrompt: old.systemPrompt ?? defaultSettings.systemPrompt,
+            maxContextMessages: defaultSettings.maxContextMessages,
+            agenticMode: defaultSettings.agenticMode,
           };
+        }
+        if (version < 3 && persisted.settings) {
+          persisted.settings.maxContextMessages ??= defaultSettings.maxContextMessages;
+          persisted.settings.agenticMode ??= defaultSettings.agenticMode;
         }
         return persisted;
       },
@@ -170,6 +190,7 @@ export const useAppStore = create<AppState>()(
         settings: s.settings,
         mode: s.mode,
         memories: s.memories,
+        messages: s.messages,
       }),
     }
   )
