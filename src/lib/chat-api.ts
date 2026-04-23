@@ -1,38 +1,39 @@
-import type { ChatMessage } from "./store";
+import type { ChatMessage, ReActStep } from "./store";
 import type { ProviderConfig } from "./store";
+import { getToolByName, REACT_SYSTEM_PROMPT } from "./tools";
 
 interface ChatParams {
   provider: ProviderConfig;
   systemPrompt: string;
   messages: ChatMessage[];
+  /** When true, run a ReAct agentic loop with tool calling. */
+  agentic?: boolean;
+  /** Maximum recent messages to send (short-term memory window). */
+  maxContextMessages?: number;
+  /** Streaming-style callback as ReAct steps are produced. */
+  onStep?: (step: ReActStep) => void;
+}
+
+export interface AgentResult {
+  finalAnswer: string;
+  steps: ReActStep[];
 }
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/$/, "");
 }
 
-/**
- * Calls the configured provider's chat endpoint. Supports OpenAI-compatible
- * (/chat/completions) and Ollama (/api/chat). Falls back to a mock response
- * when the URL is unset or still the placeholder.
- */
-export async function chatCompletion({
-  provider,
-  systemPrompt,
-  messages,
-}: ChatParams): Promise<string> {
-  const trimmed = provider.apiUrl?.trim();
-  if (!trimmed || trimmed.startsWith("https://your-tunnel")) {
-    await new Promise((r) => setTimeout(r, 700));
-    const last = messages[messages.length - 1]?.content ?? "";
-    return `**Demo response** — configure your API URL in Settings to connect to your real model.\n\nYou said: _${last}_`;
-  }
+interface OAIMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
 
-  const base = normalizeUrl(trimmed);
-  const fullMessages = [
-    { role: "system" as const, content: systemPrompt },
-    ...messages.map((m) => ({ role: m.role, content: m.content })),
-  ];
+async function rawCompletion(
+  provider: ProviderConfig,
+  fullMessages: OAIMessage[],
+  stop?: string[],
+): Promise<string> {
+  const base = normalizeUrl(provider.apiUrl);
 
   if (provider.provider === "ollama") {
     const res = await fetch(`${base}/api/chat`, {
@@ -45,6 +46,7 @@ export async function chatCompletion({
         model: provider.model,
         messages: fullMessages,
         stream: false,
+        options: stop ? { stop } : undefined,
       }),
     });
     if (!res.ok) {
@@ -52,10 +54,9 @@ export async function chatCompletion({
       throw new Error(`Ollama error ${res.status}: ${text || res.statusText}`);
     }
     const data = (await res.json()) as { message?: { content?: string } };
-    return data.message?.content ?? "(empty response)";
+    return data.message?.content ?? "";
   }
 
-  // OpenAI-compatible
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: {
@@ -66,6 +67,7 @@ export async function chatCompletion({
       model: provider.model,
       messages: fullMessages,
       stream: false,
+      stop,
     }),
   });
   if (!res.ok) {
@@ -75,7 +77,151 @@ export async function chatCompletion({
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
   };
-  return data.choices?.[0]?.message?.content ?? "(empty response)";
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
+/** Parse a single ReAct chunk emitted by the model. */
+function parseReActChunk(text: string): {
+  thought?: string;
+  action?: string;
+  actionInput?: string;
+  finalAnswer?: string;
+} {
+  const grab = (label: string): string | undefined => {
+    const re = new RegExp(`${label}\\s*:\\s*([\\s\\S]*?)(?=\\n(?:Thought|Action|Action Input|Observation|Final Answer)\\s*:|$)`, "i");
+    const m = text.match(re);
+    return m ? m[1].trim() : undefined;
+  };
+  return {
+    thought: grab("Thought"),
+    action: grab("Action"),
+    actionInput: grab("Action Input"),
+    finalAnswer: grab("Final Answer"),
+  };
+}
+
+/**
+ * Runs a ReAct loop: model emits Thought/Action/Action Input → we execute the
+ * tool → feed back Observation → repeat until Final Answer (or max iterations).
+ */
+async function runAgenticLoop({
+  provider,
+  systemPrompt,
+  messages,
+  maxContextMessages = 20,
+  onStep,
+}: ChatParams): Promise<AgentResult> {
+  const trimmedHistory = messages.slice(-maxContextMessages);
+  const baseMessages: OAIMessage[] = [
+    { role: "system", content: `${REACT_SYSTEM_PROMPT}\n\n--- User-defined system prompt ---\n${systemPrompt}` },
+    ...trimmedHistory.map((m) => ({
+      role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
+      content: m.content,
+    })),
+  ];
+
+  const scratchpad: string[] = [];
+  const steps: ReActStep[] = [];
+  const maxIter = 5;
+
+  for (let i = 0; i < maxIter; i++) {
+    const convo: OAIMessage[] = [...baseMessages];
+    if (scratchpad.length) {
+      convo.push({ role: "assistant", content: scratchpad.join("\n") });
+      convo.push({
+        role: "user",
+        content: "Continue. Emit the next Thought / Action / Action Input, or Final Answer.",
+      });
+    }
+
+    const raw = await rawCompletion(provider, convo, ["\nObservation:"]);
+    const parsed = parseReActChunk(raw);
+
+    if (parsed.finalAnswer) {
+      const step: ReActStep = { thought: parsed.thought };
+      if (step.thought) {
+        steps.push(step);
+        onStep?.(step);
+      }
+      return { finalAnswer: parsed.finalAnswer, steps };
+    }
+
+    const action = (parsed.action ?? "none").trim();
+    const actionInput = parsed.actionInput ?? "";
+    const step: ReActStep = {
+      thought: parsed.thought,
+      action,
+      actionInput,
+    };
+
+    // No tool requested → ask the model to give the Final Answer next.
+    if (!action || action.toLowerCase() === "none") {
+      scratchpad.push(raw.trim());
+      scratchpad.push("Observation: (no tool used — produce the Final Answer now)");
+      step.observation = "(no tool used)";
+      steps.push(step);
+      onStep?.(step);
+      continue;
+    }
+
+    const tool = getToolByName(action);
+    let observation: string;
+    if (!tool) {
+      observation = `Error: unknown tool "${action}". Available: get_time, calculator, fetch_url, none.`;
+    } else {
+      try {
+        observation = await Promise.resolve(tool.run(actionInput));
+      } catch (e) {
+        observation = `Error: ${e instanceof Error ? e.message : "tool failed"}`;
+      }
+    }
+    step.observation = observation;
+    steps.push(step);
+    onStep?.(step);
+
+    scratchpad.push(raw.trim());
+    scratchpad.push(`Observation: ${observation}`);
+  }
+
+  return {
+    finalAnswer:
+      "_(Agent reached max iterations without producing a final answer. Try rephrasing.)_",
+    steps,
+  };
+}
+
+/**
+ * Calls the configured provider. When `agentic` is true, runs the ReAct loop
+ * with tool calling. Otherwise sends a plain chat completion. Falls back to a
+ * mock response when the URL is unset or still the placeholder.
+ */
+export async function chatCompletion(params: ChatParams): Promise<AgentResult> {
+  const { provider, systemPrompt, messages, agentic, maxContextMessages = 20 } = params;
+  const trimmed = provider.apiUrl?.trim();
+
+  if (!trimmed || trimmed.startsWith("https://your-tunnel")) {
+    await new Promise((r) => setTimeout(r, 500));
+    const last = messages[messages.length - 1]?.content ?? "";
+    return {
+      finalAnswer: `**Demo response** — configure your API URL in Settings to connect to your real model.\n\nYou said: _${last}_`,
+      steps: [],
+    };
+  }
+
+  if (agentic) {
+    return runAgenticLoop(params);
+  }
+
+  const trimmedHistory = messages.slice(-maxContextMessages);
+  const fullMessages: OAIMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...trimmedHistory.map((m) => ({
+      role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
+      content: m.content,
+    })),
+  ];
+  const text = await rawCompletion(provider, fullMessages);
+  return { finalAnswer: text || "(empty response)", steps: [] };
 }
 
 export interface TestConnectionResult {
@@ -90,7 +236,7 @@ export interface TestConnectionResult {
  * OpenAI-compatible hits /models. Returns a structured result.
  */
 export async function testConnection(
-  provider: ProviderConfig
+  provider: ProviderConfig,
 ): Promise<TestConnectionResult> {
   const trimmed = provider.apiUrl?.trim();
   if (!trimmed) {
@@ -129,7 +275,6 @@ export async function testConnection(
       };
     }
 
-    // OpenAI-compatible
     const res = await fetch(`${base}/models`, {
       headers: provider.apiKey
         ? { Authorization: `Bearer ${provider.apiKey}` }
