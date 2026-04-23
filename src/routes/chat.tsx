@@ -58,9 +58,7 @@ function ChatPage() {
 
     try {
       const reply = await chatCompletion({
-        apiUrl: settings.apiUrl,
-        apiKey: settings.apiKey,
-        model: mode === "local" ? settings.localModel : settings.cloudModel,
+        provider: mode === "local" ? settings.local : settings.cloud,
         systemPrompt: settings.systemPrompt,
         messages: [...messages, userMsg],
       });
