@@ -3,7 +3,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { ScrollArea } from "@/components/ui/scroll-area";
+
 import { useAppStore, type ChatMessage } from "@/lib/store";
 import { chatCompletion } from "@/lib/chat-api";
 import { ArrowUp, Cloud, Cpu, Sparkles, Trash2, User } from "lucide-react";
@@ -124,7 +124,7 @@ function ChatPage() {
         </div>
 
         {/* Messages */}
-        <ScrollArea className="flex-1" viewportRef={scrollRef}>
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
           <div className="space-y-6 px-6 py-6">
             {messages.length === 0 ? (
               <EmptyState />
@@ -133,7 +133,7 @@ function ChatPage() {
             )}
             {thinking && <ThinkingBubble />}
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Composer */}
         <form onSubmit={handleSubmit} className="border-t border-border p-4">
