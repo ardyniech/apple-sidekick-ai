@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useAppStore, type ModelMode, type ProviderConfig } from "@/lib/store";
 import { testConnection, type TestConnectionResult } from "@/lib/chat-api";
 import {
@@ -92,6 +93,55 @@ function SettingsPage() {
             rows={5}
             className="mt-4 font-mono text-sm"
           />
+        </Card>
+
+        <Card className="glass-card p-6">
+          <h2 className="text-base font-semibold tracking-tight">Agent & Memory</h2>
+          <p className="text-xs text-muted-foreground">
+            Short-term memory window and ReAct agentic workflow with tool calling.
+          </p>
+
+          <div className="mt-5 flex items-start justify-between gap-4 rounded-xl border border-border bg-secondary/30 p-4">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Agentic mode (ReAct)</Label>
+              <p className="text-xs text-muted-foreground">
+                AI follows Thought → Action → Observation → Final Answer and may call internal tools
+                (<code className="rounded bg-background/60 px-1">get_time</code>,{" "}
+                <code className="rounded bg-background/60 px-1">calculator</code>,{" "}
+                <code className="rounded bg-background/60 px-1">fetch_url</code>).
+              </p>
+            </div>
+            <Switch
+              checked={draft.agenticMode}
+              onCheckedChange={(v) => setDraft({ ...draft, agenticMode: v })}
+            />
+          </div>
+
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-medium">Chat memory window</Label>
+              <span className="font-mono text-xs text-muted-foreground">
+                {draft.maxContextMessages} messages
+              </span>
+            </div>
+            <Input
+              type="number"
+              min={2}
+              max={100}
+              value={draft.maxContextMessages}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  maxContextMessages: Math.max(2, Math.min(100, Number(e.target.value) || 20)),
+                })
+              }
+              className="h-9 font-mono text-sm"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Number of recent messages re-sent to the model on every turn (short-term memory).
+              History persists in your browser via LocalStorage.
+            </p>
+          </div>
         </Card>
 
         <div className="flex justify-end">
