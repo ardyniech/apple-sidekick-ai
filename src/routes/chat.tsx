@@ -57,16 +57,19 @@ function ChatPage() {
     setThinking(true);
 
     try {
-      const reply = await chatCompletion({
+      const result = await chatCompletion({
         provider: mode === "local" ? settings.local : settings.cloud,
         systemPrompt: settings.systemPrompt,
         messages: [...messages, userMsg],
+        agentic: settings.agenticMode,
+        maxContextMessages: settings.maxContextMessages,
       });
       addMessage({
         id: crypto.randomUUID(),
         role: "assistant",
-        content: reply,
+        content: result.finalAnswer,
         createdAt: Date.now(),
+        steps: result.steps,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Request failed";

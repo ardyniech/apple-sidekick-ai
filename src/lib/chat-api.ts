@@ -114,7 +114,7 @@ async function runAgenticLoop({
   const trimmedHistory = messages.slice(-maxContextMessages);
   const baseMessages: OAIMessage[] = [
     { role: "system", content: `${REACT_SYSTEM_PROMPT}\n\n--- User-defined system prompt ---\n${systemPrompt}` },
-    ...trimmedHistory.map((m) => ({
+    ...trimmedHistory.map((m): OAIMessage => ({
       role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
       content: m.content,
     })),
@@ -215,7 +215,7 @@ export async function chatCompletion(params: ChatParams): Promise<AgentResult> {
   const trimmedHistory = messages.slice(-maxContextMessages);
   const fullMessages: OAIMessage[] = [
     { role: "system", content: systemPrompt },
-    ...trimmedHistory.map((m) => ({
+    ...trimmedHistory.map((m): OAIMessage => ({
       role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
       content: m.content,
     })),
