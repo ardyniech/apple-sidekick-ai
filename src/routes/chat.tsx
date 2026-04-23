@@ -6,7 +6,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 import { useAppStore, type ChatMessage } from "@/lib/store";
 import { chatCompletion } from "@/lib/chat-api";
-import { ArrowUp, Cloud, Cpu, Sparkles, Trash2, User } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, Cloud, Cpu, Sparkles, Trash2, User, Wrench } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -204,6 +204,7 @@ function EmptyState() {
 
 function MessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === "user";
+  const hasSteps = !isUser && msg.steps && msg.steps.length > 0;
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
@@ -215,21 +216,82 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
       >
         {isUser ? <User className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
       </div>
-      <div
-        className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
-          isUser
-            ? "bg-primary text-primary-foreground"
-            : "glass-card text-foreground"
-        }`}
-      >
-        {isUser ? (
-          <p className="whitespace-pre-wrap">{msg.content}</p>
-        ) : (
-          <div className="prose-chat">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-          </div>
-        )}
+      <div className={`flex max-w-[78%] flex-col gap-2 ${isUser ? "items-end" : "items-start"}`}>
+        {hasSteps && <ReasoningTrace steps={msg.steps!} />}
+        <div
+          className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+            isUser
+              ? "bg-primary text-primary-foreground"
+              : "glass-card text-foreground"
+          }`}
+        >
+          {isUser ? (
+            <p className="whitespace-pre-wrap">{msg.content}</p>
+          ) : (
+            <div className="prose-chat">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function ReasoningTrace({ steps }: { steps: NonNullable<ChatMessage["steps"]> }) {
+  const [open, setOpen] = useState(false);
+  const toolsUsed = steps.filter((s) => s.action && s.action.toLowerCase() !== "none").length;
+  return (
+    <div className="w-full rounded-xl border border-border/60 bg-secondary/30 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-muted-foreground transition-smooth hover:text-foreground"
+      >
+        <Brain className="h-3.5 w-3.5" />
+        <span className="font-medium">
+          {steps.length} reasoning step{steps.length === 1 ? "" : "s"}
+          {toolsUsed > 0 && ` · ${toolsUsed} tool call${toolsUsed === 1 ? "" : "s"}`}
+        </span>
+        <ChevronDown
+          className={`ml-auto h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-border/60 px-3 py-3">
+          {steps.map((s, i) => (
+            <div key={i} className="space-y-1.5">
+              {s.thought && (
+                <div>
+                  <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Thought</span>
+                  <p className="text-foreground/90">{s.thought}</p>
+                </div>
+              )}
+              {s.action && s.action.toLowerCase() !== "none" && (
+                <div>
+                  <span className="font-mono text-[10px] uppercase tracking-wide text-primary">
+                    <Wrench className="mr-1 inline h-3 w-3" />
+                    Action · {s.action}
+                  </span>
+                  {s.actionInput && (
+                    <pre className="mt-0.5 overflow-x-auto rounded bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
+                      {s.actionInput}
+                    </pre>
+                  )}
+                </div>
+              )}
+              {s.observation && (
+                <div>
+                  <span className="font-mono text-[10px] uppercase tracking-wide text-success">Observation</span>
+                  <pre className="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
+                    {s.observation}
+                  </pre>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
