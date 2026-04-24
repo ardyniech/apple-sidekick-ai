@@ -1,9 +1,10 @@
-import type { ChatMessage, ReActStep } from "./store";
+import type { ChatMessage, ReActStep, BridgeConfig } from "./store";
 import type { ProviderConfig } from "./store";
-import { getToolByName, REACT_SYSTEM_PROMPT } from "./tools";
+import { getToolByName, buildReactSystemPrompt } from "./tools";
 
 interface ChatParams {
   provider: ProviderConfig;
+  bridge: BridgeConfig;
   systemPrompt: string;
   messages: ChatMessage[];
   /** When true, run a ReAct agentic loop with tool calling. */
@@ -106,6 +107,7 @@ function parseReActChunk(text: string): {
  */
 async function runAgenticLoop({
   provider,
+  bridge,
   systemPrompt,
   messages,
   maxContextMessages = 20,
@@ -113,7 +115,7 @@ async function runAgenticLoop({
 }: ChatParams): Promise<AgentResult> {
   const trimmedHistory = messages.slice(-maxContextMessages);
   const baseMessages: OAIMessage[] = [
-    { role: "system", content: `${REACT_SYSTEM_PROMPT}\n\n--- User-defined system prompt ---\n${systemPrompt}` },
+    { role: "system", content: `${buildReactSystemPrompt(bridge)}\n\n--- User-defined system prompt ---\n${systemPrompt}` },
     ...trimmedHistory.map((m): OAIMessage => ({
       role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
       content: m.content,
@@ -164,13 +166,13 @@ async function runAgenticLoop({
       continue;
     }
 
-    const tool = getToolByName(action);
+    const tool = getToolByName(action, bridge);
     let observation: string;
     if (!tool) {
-      observation = `Error: unknown tool "${action}". Available: get_time, calculator, fetch_url, none.`;
+      observation = `Error: unknown tool "${action}".`;
     } else {
       try {
-        observation = await Promise.resolve(tool.run(actionInput));
+        observation = await Promise.resolve(tool.run(actionInput, { bridge }));
       } catch (e) {
         observation = `Error: ${e instanceof Error ? e.message : "tool failed"}`;
       }
