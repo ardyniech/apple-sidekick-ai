@@ -13,9 +13,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useAppStore, type ModelMode, type ProviderConfig } from "@/lib/store";
+import { useAppStore, type ModelMode, type ProviderConfig, type BridgeConfig } from "@/lib/store";
 import { testConnection, type TestConnectionResult } from "@/lib/chat-api";
+import { bridgeHealth } from "@/lib/bridge";
 import {
+  AlertTriangle,
   CheckCircle2,
   Cloud,
   Cpu,
@@ -25,6 +27,7 @@ import {
   Loader2,
   Plug,
   Save,
+  Server,
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
@@ -33,12 +36,8 @@ import { toast } from "sonner";
 export const Route = createFileRoute("/settings")({
   head: () => ({
     meta: [
-      { title: "Settings — Aurora AI Assistant" },
-      {
-        name: "description",
-        content:
-          "Configure your local or cloud model (Ollama / OpenAI-compatible) and verify the connection.",
-      },
+      { title: "Settings — Aurora" },
+      { name: "description", content: "Configure Agent Bridge, model providers, and the agent loop." },
     ],
   }),
   component: SettingsPage,
@@ -47,28 +46,31 @@ export const Route = createFileRoute("/settings")({
 function SettingsPage() {
   const settings = useAppStore((s) => s.settings);
   const updateSettings = useAppStore((s) => s.updateSettings);
-
   const [draft, setDraft] = useState(settings);
 
   function save() {
     updateSettings(draft);
     toast.success("Settings saved");
   }
-
-  function patch(mode: ModelMode, p: Partial<ProviderConfig>) {
+  function patchProvider(mode: ModelMode, p: Partial<ProviderConfig>) {
     setDraft({ ...draft, [mode]: { ...draft[mode], ...p } });
+  }
+  function patchBridge(p: Partial<BridgeConfig>) {
+    setDraft({ ...draft, bridge: { ...draft.bridge, ...p } });
   }
 
   return (
-    <AppLayout title="Settings" subtitle="API & model configuration">
+    <AppLayout title="Settings" subtitle="Bridge, models & agent">
       <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
+        <BridgeCard bridge={draft.bridge} onChange={patchBridge} />
+
         <ProviderCard
           mode="local"
           icon={<Cpu className="h-4 w-4" />}
           title="Local Model"
           subtitle="Ollama, Llama.cpp, or any OpenAI-compatible server on your machine"
           provider={draft.local}
-          onChange={(p) => patch("local", p)}
+          onChange={(p) => patchProvider("local", p)}
           accent="text-success"
         />
 
@@ -78,19 +80,19 @@ function SettingsPage() {
           title="Cloud Model"
           subtitle="OpenAI, OpenRouter, Ollama Cloud, or your tunneled endpoint"
           provider={draft.cloud}
-          onChange={(p) => patch("cloud", p)}
+          onChange={(p) => patchProvider("cloud", p)}
           accent="text-primary"
         />
 
         <Card className="glass-card p-6">
           <h2 className="text-base font-semibold tracking-tight">System Prompt</h2>
           <p className="text-xs text-muted-foreground">
-            Sent as the system message at the start of every conversation
+            Sent as the system message at the start of every conversation. Default is an SRE persona.
           </p>
           <Textarea
             value={draft.systemPrompt}
             onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
-            rows={5}
+            rows={6}
             className="mt-4 font-mono text-sm"
           />
         </Card>
@@ -98,17 +100,14 @@ function SettingsPage() {
         <Card className="glass-card p-6">
           <h2 className="text-base font-semibold tracking-tight">Agent & Memory</h2>
           <p className="text-xs text-muted-foreground">
-            Short-term memory window and ReAct agentic workflow with tool calling.
+            ReAct loop and short-term memory window.
           </p>
 
           <div className="mt-5 flex items-start justify-between gap-4 rounded-xl border border-border bg-secondary/30 p-4">
             <div className="space-y-1">
               <Label className="text-sm font-medium">Agentic mode (ReAct)</Label>
               <p className="text-xs text-muted-foreground">
-                AI follows Thought → Action → Observation → Final Answer and may call internal tools
-                (<code className="rounded bg-background/60 px-1">get_time</code>,{" "}
-                <code className="rounded bg-background/60 px-1">calculator</code>,{" "}
-                <code className="rounded bg-background/60 px-1">fetch_url</code>).
+                Thought → Action → Observation → Final Answer. Required for server tools to work.
               </p>
             </div>
             <Switch
@@ -120,9 +119,7 @@ function SettingsPage() {
           <div className="mt-4 space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-sm font-medium">Chat memory window</Label>
-              <span className="font-mono text-xs text-muted-foreground">
-                {draft.maxContextMessages} messages
-              </span>
+              <span className="font-mono text-xs text-muted-foreground">{draft.maxContextMessages} messages</span>
             </div>
             <Input
               type="number"
@@ -137,24 +134,142 @@ function SettingsPage() {
               }
               className="h-9 font-mono text-sm"
             />
-            <p className="text-[11px] text-muted-foreground">
-              Number of recent messages re-sent to the model on every turn (short-term memory).
-              History persists in your browser via LocalStorage.
-            </p>
           </div>
         </Card>
 
         <div className="flex justify-end">
-          <Button
-            onClick={save}
-            className="h-10 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90"
-          >
+          <Button onClick={save} className="h-10 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90">
             <Save className="mr-1.5 h-4 w-4" />
             Save settings
           </Button>
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+function BridgeCard({
+  bridge,
+  onChange,
+}: {
+  bridge: BridgeConfig;
+  onChange: (p: Partial<BridgeConfig>) => void;
+}) {
+  const [showToken, setShowToken] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string; latencyMs?: number } | null>(null);
+
+  async function runTest() {
+    setTesting(true);
+    setResult(null);
+    const t0 = performance.now();
+    try {
+      const h = await bridgeHealth(bridge);
+      const latencyMs = Math.round(performance.now() - t0);
+      setResult({
+        ok: true,
+        message: `${h.hostname ?? "ok"} · v${h.version} · ${h.os}`,
+        latencyMs,
+      });
+      toast.success(`Bridge healthy on ${h.hostname}`);
+    } catch (e) {
+      const latencyMs = Math.round(performance.now() - t0);
+      const msg = e instanceof Error ? e.message : "failed";
+      setResult({ ok: false, message: msg, latencyMs });
+      toast.error(`Bridge unreachable: ${msg}`);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <Card className="glass-card border-warning/30 p-6">
+      <div className="mb-2 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-warning/15 text-warning">
+          <Server className="h-4 w-4" />
+        </span>
+        <div className="flex-1">
+          <h2 className="text-base font-semibold tracking-tight">Aurora Agent Bridge</h2>
+          <p className="text-xs text-muted-foreground">
+            The Go daemon running on YOUR server. Without this, the AI cannot reach your machine.
+          </p>
+        </div>
+        <Switch checked={bridge.enabled} onCheckedChange={(v) => onChange({ enabled: v })} />
+      </div>
+
+      {bridge.enabled && (!bridge.baseUrl || !bridge.token) && (
+        <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>Enabled but missing URL or token. Server tools won't appear to the AI until both are filled.</span>
+        </div>
+      )}
+
+      <div className="mt-5 space-y-4">
+        <Field label="Base URL (Cloudflare Tunnel pointing to aurora-agent)">
+          <Input
+            value={bridge.baseUrl}
+            onChange={(e) => onChange({ baseUrl: e.target.value })}
+            placeholder="https://random-name.trycloudflare.com"
+            className="font-mono text-sm"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Run <code className="rounded bg-secondary/60 px-1">cloudflared tunnel --url http://localhost:8787</code> on your server.
+          </p>
+        </Field>
+
+        <Field label="Bearer token (must equal AURORA_TOKEN env on the agent)">
+          <div className="relative">
+            <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type={showToken ? "text" : "password"}
+              value={bridge.token}
+              onChange={(e) => onChange({ token: e.target.value })}
+              placeholder="64-char hex token from `openssl rand -hex 32`"
+              className="pl-9 pr-10 font-mono text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken((s) => !s)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">Stored only in your browser. Required for every bridge call.</p>
+        </Field>
+
+        <div className="rounded-xl border border-border bg-secondary/30 p-4">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Setup quickstart</p>
+          <pre className="overflow-x-auto rounded-lg bg-background/60 p-3 font-mono text-[11px] text-foreground/80">{`# on your server
+cd agent-bridge && go build -o aurora-agent .
+export AURORA_TOKEN="$(openssl rand -hex 32)"   # ← paste this above
+./aurora-agent -addr :8787 -root /path/to/your/project &
+cloudflared tunnel --url http://localhost:8787   # ← paste tunnel URL above`}</pre>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={runTest}
+            disabled={testing || !bridge.baseUrl}
+            className="h-9 rounded-xl"
+          >
+            {testing ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plug className="mr-1.5 h-4 w-4" />}
+            {testing ? "Pinging…" : "Test bridge"}
+          </Button>
+          {result && (
+            <div className={`flex items-center gap-1.5 text-xs ${result.ok ? "text-success" : "text-destructive"}`}>
+              {result.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+              <span>{result.message}</span>
+              {typeof result.latencyMs === "number" && (
+                <span className="text-muted-foreground">· {result.latencyMs}ms</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -194,9 +309,7 @@ function ProviderCard({
 
   const isOllama = provider.provider === "ollama";
   const placeholderUrl = isOllama
-    ? mode === "local"
-      ? "http://localhost:11434"
-      : "https://ollama.example.com"
+    ? mode === "local" ? "http://localhost:11434" : "https://ollama.example.com"
     : "https://api.openai.com/v1";
   const placeholderModel = isOllama ? "llama3.1:8b" : "gpt-4o-mini";
 
@@ -218,9 +331,7 @@ function ProviderCard({
             value={provider.provider}
             onValueChange={(v) => onChange({ provider: v as ProviderConfig["provider"] })}
           >
-            <SelectTrigger className="h-9 text-sm">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="ollama">Ollama (/api/chat)</SelectItem>
               <SelectItem value="openai">OpenAI-compatible (/chat/completions)</SelectItem>
@@ -235,21 +346,6 @@ function ProviderCard({
             placeholder={placeholderUrl}
             className="font-mono text-sm"
           />
-          <p className="text-[11px] text-muted-foreground">
-            {isOllama ? (
-              <>
-                Ollama root URL — endpoints{" "}
-                <code className="rounded bg-secondary/60 px-1">/api/chat</code> and{" "}
-                <code className="rounded bg-secondary/60 px-1">/api/tags</code> will be used.
-              </>
-            ) : (
-              <>
-                Should expose{" "}
-                <code className="rounded bg-secondary/60 px-1">/chat/completions</code> and{" "}
-                <code className="rounded bg-secondary/60 px-1">/models</code>.
-              </>
-            )}
-          </p>
         </Field>
 
         <Field label="Model name">
@@ -261,7 +357,7 @@ function ProviderCard({
           />
         </Field>
 
-        <Field label={isOllama ? "API Key (optional · for Ollama Cloud)" : "API Key"}>
+        <Field label={isOllama ? "API Key (optional)" : "API Key"}>
           <div className="relative">
             <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -279,38 +375,16 @@ function ProviderCard({
               {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          <p className="text-[11px] text-muted-foreground">
-            Stored locally in your browser only.
-          </p>
         </Field>
 
         <div className="flex flex-wrap items-center gap-3 pt-1">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={runTest}
-            disabled={testing}
-            className="h-9 rounded-xl"
-          >
-            {testing ? (
-              <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-            ) : (
-              <Plug className="mr-1.5 h-4 w-4" />
-            )}
+          <Button type="button" variant="outline" onClick={runTest} disabled={testing} className="h-9 rounded-xl">
+            {testing ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plug className="mr-1.5 h-4 w-4" />}
             {testing ? "Testing…" : "Test connection"}
           </Button>
-
           {result && (
-            <div
-              className={`flex items-center gap-1.5 text-xs ${
-                result.ok ? "text-success" : "text-destructive"
-              }`}
-            >
-              {result.ok ? (
-                <CheckCircle2 className="h-3.5 w-3.5" />
-              ) : (
-                <XCircle className="h-3.5 w-3.5" />
-              )}
+            <div className={`flex items-center gap-1.5 text-xs ${result.ok ? "text-success" : "text-destructive"}`}>
+              {result.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
               <span>{result.message}</span>
               {typeof result.latencyMs === "number" && (
                 <span className="text-muted-foreground">· {result.latencyMs}ms</span>
@@ -321,9 +395,7 @@ function ProviderCard({
 
         {result?.ok && result.models && result.models.length > 0 && (
           <div className="rounded-xl border border-border bg-secondary/30 p-3">
-            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Available models
-            </p>
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Available models</p>
             <div className="flex flex-wrap gap-1.5">
               {result.models.slice(0, 12).map((m) => (
                 <button
@@ -336,9 +408,7 @@ function ProviderCard({
                 </button>
               ))}
               {result.models.length > 12 && (
-                <span className="px-1 text-[11px] text-muted-foreground">
-                  +{result.models.length - 12} more
-                </span>
+                <span className="px-1 text-[11px] text-muted-foreground">+{result.models.length - 12} more</span>
               )}
             </div>
           </div>
@@ -348,13 +418,7 @@ function ProviderCard({
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
       <Label className="text-xs font-medium text-muted-foreground">{label}</Label>
