@@ -59,6 +59,7 @@ function ChatPage() {
     try {
       const result = await chatCompletion({
         provider: mode === "local" ? settings.local : settings.cloud,
+        bridge: settings.bridge,
         systemPrompt: settings.systemPrompt,
         messages: [...messages, userMsg],
         agentic: settings.agenticMode,
