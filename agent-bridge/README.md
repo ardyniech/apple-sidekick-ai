@@ -1,9 +1,18 @@
 # Aurora Agent Bridge
 
 Single-file Go daemon yang berjalan di **server Anda** dan diakses oleh web app
-Aurora lewat HTTPS (Cloudflare Tunnel). Tanpa bridge ini, web app tidak punya
-cara legal untuk eksekusi shell, baca/tulis file, atau ambil metrics nyata —
-karena browser disandbox.
+Aurora lewat **Tailscale** (WireGuard mesh VPN). Tanpa bridge ini, web app tidak
+punya cara legal untuk eksekusi shell, baca/tulis file, atau ambil metrics nyata
+— karena browser disandbox.
+
+## Kenapa Tailscale (bukan Cloudflare Tunnel)?
+
+- **Auth otomatis**: Tailnet sudah meng-authenticate device pakai SSO Anda. Tidak
+  perlu generate / paste / rotate token.
+- **End-to-end encrypted (WireGuard)**: Tidak ada proxy publik di tengah.
+- **Zero config DNS**: MagicDNS kasih hostname stabil (`my-server.tail-scale.ts.net`).
+- **Tidak terbuka ke internet**: Port 8787 hanya bisa diakses device di Tailnet
+  yang sama. Aman secara default.
 
 ## Build
 
@@ -16,43 +25,40 @@ go build -o aurora-agent .
 
 Hasil: binary tunggal `aurora-agent` (~6 MB), tanpa runtime dependency.
 
-## Jalankan
+## Setup (Tailscale)
 
 ```bash
-# 1. Generate token panjang (sekali saja, simpan baik-baik)
-export AURORA_TOKEN="$(openssl rand -hex 32)"
-echo $AURORA_TOKEN   # ← copy ke Settings → Agent Bridge → Token di web app
+# 1. Install Tailscale di SERVER
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+# login lewat browser, otorize device
 
-# 2. Jalankan, arahkan ke root project Anda
+# 2. Install Tailscale di DEVICE yang buka web app (laptop/desktop)
+#    https://tailscale.com/download — login ke tailnet yang sama.
+
+# 3. Jalankan agent di server (tanpa token)
 ./aurora-agent -addr :8787 -root /home/you/my-project
+
+# 4. Cari nama tailnet server
+tailscale status
+# Contoh output:
+#   100.101.102.103   my-server   you@   linux   -
+#   → MagicDNS name: my-server.tail-scale.ts.net
 ```
 
-Output:
+Di web app **Settings → Agent Bridge**, paste:
 ```
-aurora-agent v0.1.0 listening on :8787 (root=/home/you/my-project)
-```
-
-Setiap request tertulis ke stdout sebagai audit log:
-```
-[audit] 1.2.3.4:54321 exec 2026-04-24T10:15:30Z :: cwd=/home/you/my-project cmd="git status"
+Base URL: http://my-server.tail-scale.ts.net:8787
+Token   : (kosongkan)
 ```
 
-## Expose via Cloudflare Tunnel
-
-```bash
-cloudflared tunnel --url http://localhost:8787
-```
-
-Cloudflare akan kasih URL semacam `https://random-name.trycloudflare.com`.
-Masukkan URL itu ke **Settings → Agent Bridge → Base URL** di web app.
-
-Untuk produksi, lebih baik named tunnel dengan custom domain + Cloudflare
-Access (zero-trust) di depannya.
+Klik **Test bridge** — kalau hijau, beres.
 
 ## Endpoint
 
-Semua endpoint kecuali `/health` butuh header
-`Authorization: Bearer <AURORA_TOKEN>`.
+Semua endpoint kecuali `/health` butuh auth **kalau** `AURORA_TOKEN` di-set.
+Di mode Tailscale token kosong = auth disabled (aman karena cuma device tailnet
+yang bisa connect).
 
 | Method | Path       | Body                                                           | Fungsi                              |
 |--------|------------|----------------------------------------------------------------|-------------------------------------|
@@ -64,15 +70,31 @@ Semua endpoint kecuali `/health` butuh header
 | POST   | `/git`     | `{ "args": ["log", "--oneline", "-10"] }`                      | Jalankan git command                |
 | POST   | `/tail`    | `{ "path": "/var/log/app.log", "lines": 200 }`                 | tail -n untuk log file              |
 
+Setiap request tertulis ke stdout sebagai audit log:
+```
+[audit] 100.x.y.z:54321 exec 2026-04-24T10:15:30Z :: cwd=/home/you/my-project cmd="git status"
+```
+
+## Mode publik (opsional)
+
+Kalau Anda *harus* expose agent ke internet (mis. tidak bisa pasang Tailscale di
+device tertentu), set token + taruh di belakang reverse proxy / Cloudflare Access:
+
+```bash
+export AURORA_TOKEN="$(openssl rand -hex 32)"
+./aurora-agent -addr 127.0.0.1:8787 -root /home/you/my-project
+# lalu reverse-proxy via Caddy/Nginx + TLS, isi token di Settings.
+```
+
 ## Keamanan — BACA INI
 
 Anda memilih **free exec + auto-commit**, jadi:
 
-- Token = satu-satunya pertahanan. **Pakai 32+ random bytes**, jangan share.
-- Path file di-scope ke `-root`. Path traversal (`../`) ditolak.
-- Pertimbangkan pasang **Cloudflare Access** di depan tunnel (login Google/GitHub
-  sebelum request masuk ke Aurora).
 - Jalankan agent sebagai **user terbatas**, bukan root.
+- Path file di-scope ke `-root`. Path traversal (`../`) ditolak.
+- Di Tailscale: jangan expose port 8787 ke `0.0.0.0` di NIC publik. Bind ke
+  tailnet interface saja (default `:8787` listen ke semua interface — kalau
+  server Anda public-facing, ganti ke `-addr 100.x.x.x:8787` pakai IP tailnet).
 - `git commit` butuh `git config user.email` & `user.name` di repo target.
 
 ## Systemd unit (opsional)
@@ -81,13 +103,12 @@ Anda memilih **free exec + auto-commit**, jadi:
 # /etc/systemd/system/aurora-agent.service
 [Unit]
 Description=Aurora Agent Bridge
-After=network.target
+After=network.target tailscaled.service
 
 [Service]
 Type=simple
 User=aurora
-Environment=AURORA_TOKEN=PASTE_TOKEN_HERE
-ExecStart=/usr/local/bin/aurora-agent -addr 127.0.0.1:8787 -root /home/aurora/projects/my-app
+ExecStart=/usr/local/bin/aurora-agent -addr :8787 -root /home/aurora/projects/my-app
 Restart=on-failure
 
 [Install]

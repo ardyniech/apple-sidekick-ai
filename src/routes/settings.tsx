@@ -197,34 +197,35 @@ function BridgeCard({
         <Switch checked={bridge.enabled} onCheckedChange={(v) => onChange({ enabled: v })} />
       </div>
 
-      {bridge.enabled && (!bridge.baseUrl || !bridge.token) && (
+      {bridge.enabled && !bridge.baseUrl && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>Enabled but missing URL or token. Server tools won't appear to the AI until both are filled.</span>
+          <span>Enabled but missing Base URL. Server tools won't appear to the AI until it's filled.</span>
         </div>
       )}
 
       <div className="mt-5 space-y-4">
-        <Field label="Base URL (Cloudflare Tunnel pointing to aurora-agent)">
+        <Field label="Base URL (Tailscale address of your server)">
           <Input
             value={bridge.baseUrl}
             onChange={(e) => onChange({ baseUrl: e.target.value })}
-            placeholder="https://random-name.trycloudflare.com"
+            placeholder="http://my-server.tail-scale.ts.net:8787"
             className="font-mono text-sm"
           />
           <p className="text-[11px] text-muted-foreground">
-            Run <code className="rounded bg-secondary/60 px-1">cloudflared tunnel --url http://localhost:8787</code> on your server.
+            Use the MagicDNS name (<code className="rounded bg-secondary/60 px-1">tailscale status</code>) or raw 100.x IP.
+            Both this browser and your server must be on the same Tailnet.
           </p>
         </Field>
 
-        <Field label="Bearer token (must equal AURORA_TOKEN env on the agent)">
+        <Field label="Bearer token (optional — leave empty when on Tailnet)">
           <div className="relative">
             <KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               type={showToken ? "text" : "password"}
               value={bridge.token}
               onChange={(e) => onChange({ token: e.target.value })}
-              placeholder="64-char hex token from `openssl rand -hex 32`"
+              placeholder="Empty = no auth (Tailscale handles it)"
               className="pl-9 pr-10 font-mono text-sm"
             />
             <button
@@ -235,16 +236,26 @@ function BridgeCard({
               {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
-          <p className="text-[11px] text-muted-foreground">Stored only in your browser. Required for every bridge call.</p>
+          <p className="text-[11px] text-muted-foreground">
+            Only set if you also expose the agent on a public network. Tailscale already encrypts + authenticates via WireGuard.
+          </p>
         </Field>
 
         <div className="rounded-xl border border-border bg-secondary/30 p-4">
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Setup quickstart</p>
-          <pre className="overflow-x-auto rounded-lg bg-background/60 p-3 font-mono text-[11px] text-foreground/80">{`# on your server
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Setup quickstart (Tailscale)</p>
+          <pre className="overflow-x-auto rounded-lg bg-background/60 p-3 font-mono text-[11px] text-foreground/80">{`# 1. Install Tailscale on your server (once)
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+
+# 2. Install Tailscale on this device too, log in to the same tailnet.
+
+# 3. Build & run the agent (no token needed on Tailnet)
 cd agent-bridge && go build -o aurora-agent .
-export AURORA_TOKEN="$(openssl rand -hex 32)"   # ← paste this above
 ./aurora-agent -addr :8787 -root /path/to/your/project &
-cloudflared tunnel --url http://localhost:8787   # ← paste tunnel URL above`}</pre>
+
+# 4. Find your server's tailnet name
+tailscale status     # → e.g. my-server.tail-scale.ts.net
+# Paste  http://my-server.tail-scale.ts.net:8787  into Base URL above.`}</pre>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 pt-1">
