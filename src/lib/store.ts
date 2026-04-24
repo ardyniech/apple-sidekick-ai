@@ -36,9 +36,19 @@ export interface ProviderConfig {
   model: string;
 }
 
+export interface BridgeConfig {
+  /** Base URL of Agent Bridge (e.g. Cloudflare Tunnel URL pointing to your server). */
+  baseUrl: string;
+  /** Bearer token (matches AURORA_TOKEN env on the agent). */
+  token: string;
+  /** Master switch — when off, server tools are hidden from the AI. */
+  enabled: boolean;
+}
+
 interface Settings {
   local: ProviderConfig;
   cloud: ProviderConfig;
+  bridge: BridgeConfig;
   systemPrompt: string;
   /** Number of recent messages sent back to the model as short-term memory. */
   maxContextMessages: number;
@@ -47,50 +57,33 @@ interface Settings {
 }
 
 interface AppState {
-  // Settings
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
   updateProvider: (mode: ModelMode, patch: Partial<ProviderConfig>) => void;
+  updateBridge: (patch: Partial<BridgeConfig>) => void;
 
-  // Mode
   mode: ModelMode;
   setMode: (m: ModelMode) => void;
 
-  // Chat
   messages: ChatMessage[];
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (content: string) => void;
   clearChat: () => void;
 
-  // Memory
   memories: MemoryContext[];
   addMemory: (m: Omit<MemoryContext, "id" | "createdAt">) => void;
   removeMemory: (id: string) => void;
 }
 
-const seedMemories: MemoryContext[] = [
-  {
-    id: "m1",
-    title: "User Preferences",
-    content: "Prefers concise answers, dark UI, weekly status reports on Fridays.",
-    tags: ["profile", "preferences"],
-    createdAt: Date.now() - 86400000 * 3,
-  },
-  {
-    id: "m2",
-    title: "Project: Aurora Dashboard",
-    content: "Internal monitoring tool — uses Cloudflare Tunnels and a self-hosted Llama.cpp server.",
-    tags: ["project", "infra"],
-    createdAt: Date.now() - 86400000 * 1,
-  },
-  {
-    id: "m3",
-    title: "Meeting notes — Q2 planning",
-    content: "Focus on automation, reduce manual triage by 40%. Owner: Alex.",
-    tags: ["meeting", "planning"],
-    createdAt: Date.now() - 3600000 * 5,
-  },
-];
+const DEFAULT_SRE_PROMPT = `You are a Site Reliability Engineer assistant connected to the user's own server via the Aurora Agent Bridge.
+
+Your job:
+- Diagnose problems on the server (services down, high CPU/RAM, failing builds, log errors).
+- Read project source code, understand it, and propose fixes.
+- When confident, write the fix back via the write_file tool with commit=true so changes are version-controlled.
+- Always inspect before mutating: read the file, run a relevant command (git status, ls, tail of a log) before writing.
+- Quote concrete evidence (a log line, a file snippet, a command exit code) — never hand-wave.
+- Be terse. Markdown headings + code blocks. No filler.`;
 
 const defaultSettings: Settings = {
   local: {
@@ -101,12 +94,16 @@ const defaultSettings: Settings = {
   },
   cloud: {
     provider: "openai",
-    apiUrl: "https://your-tunnel.example.com/v1",
+    apiUrl: "",
     apiKey: "",
     model: "gpt-4o-mini",
   },
-  systemPrompt:
-    "You are a helpful, concise personal AI assistant. Use markdown when useful.",
+  bridge: {
+    baseUrl: "",
+    token: "",
+    enabled: false,
+  },
+  systemPrompt: DEFAULT_SRE_PROMPT,
   maxContextMessages: 20,
   agenticMode: true,
 };
@@ -123,6 +120,10 @@ export const useAppStore = create<AppState>()(
             ...s.settings,
             [mode]: { ...s.settings[mode], ...patch },
           },
+        })),
+      updateBridge: (patch) =>
+        set((s) => ({
+          settings: { ...s.settings, bridge: { ...s.settings.bridge, ...patch } },
         })),
 
       mode: "local",
@@ -143,7 +144,7 @@ export const useAppStore = create<AppState>()(
         }),
       clearChat: () => set({ messages: [] }),
 
-      memories: seedMemories,
+      memories: [],
       addMemory: (m) =>
         set((s) => ({
           memories: [
@@ -156,11 +157,10 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "ai-assistant-store",
-      version: 3,
+      version: 4,
       migrate: (persisted: any, version) => {
         if (!persisted) return persisted;
         if (version < 2 && persisted.settings) {
-          // Migrate old flat shape -> new local/cloud providers
           const old = persisted.settings;
           persisted.settings = {
             local: {
@@ -183,6 +183,13 @@ export const useAppStore = create<AppState>()(
         if (version < 3 && persisted.settings) {
           persisted.settings.maxContextMessages ??= defaultSettings.maxContextMessages;
           persisted.settings.agenticMode ??= defaultSettings.agenticMode;
+        }
+        if (version < 4 && persisted.settings) {
+          persisted.settings.bridge ??= defaultSettings.bridge;
+          // Drop the placeholder cloud URL from the old default.
+          if (persisted.settings.cloud?.apiUrl?.startsWith("https://your-tunnel")) {
+            persisted.settings.cloud.apiUrl = "";
+          }
         }
         return persisted;
       },
