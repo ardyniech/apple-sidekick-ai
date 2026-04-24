@@ -183,13 +183,14 @@ function Dashboard() {
               <li className="flex items-start gap-2">
                 <Link2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                 <span>
-                  Run <code className="rounded bg-secondary/60 px-1">aurora-agent</code> on your server (see{" "}
-                  <code className="rounded bg-secondary/60 px-1">agent-bridge/README.md</code>) and expose it via Cloudflare Tunnel.
+                  Install Tailscale on this device + your server, then run{" "}
+                  <code className="rounded bg-secondary/60 px-1">aurora-agent</code> (see{" "}
+                  <code className="rounded bg-secondary/60 px-1">agent-bridge/README.md</code>).
                 </span>
               </li>
               <li className="flex items-start gap-2">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-                <span>Paste the tunnel URL and AURORA_TOKEN into Settings → Agent Bridge.</span>
+                <span>Paste <code className="rounded bg-secondary/60 px-1">http://&lt;tailnet-name&gt;:8787</code> into Settings → Agent Bridge. Token not needed on Tailnet.</span>
               </li>
               <li className="flex items-start gap-2">
                 <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
