@@ -37,9 +37,9 @@ export interface ProviderConfig {
 }
 
 export interface BridgeConfig {
-  /** Base URL of Agent Bridge (e.g. Cloudflare Tunnel URL pointing to your server). */
+  /** Base URL of Agent Bridge over Tailscale (e.g. http://my-server:8787 or http://100.x.x.x:8787). */
   baseUrl: string;
-  /** Bearer token (matches AURORA_TOKEN env on the agent). */
+  /** Optional bearer token. Leave empty when running behind Tailscale (auth handled by WireGuard). */
   token: string;
   /** Master switch — when off, server tools are hidden from the AI. */
   enabled: boolean;

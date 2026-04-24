@@ -1,10 +1,13 @@
 // Aurora Agent Bridge — single-file HTTP daemon untuk dijalankan di server Anda.
 //
 // Build:   go build -o aurora-agent ./agent-bridge
-// Run:     AURORA_TOKEN="<token-rahasia-panjang>" ./aurora-agent -addr :8787 -root /path/to/project
-// Tunnel:  cloudflared tunnel --url http://localhost:8787
+// Run (Tailscale, recommended):
+//          ./aurora-agent -addr :8787 -root /path/to/project
+//          # Browser hits  http://<tailscale-name>:8787  — auth handled by Tailnet (WireGuard).
+// Run (public/optional token):
+//          AURORA_TOKEN="<long-random>" ./aurora-agent -addr :8787 -root /path/to/project
 //
-// Endpoint (semua butuh header  `Authorization: Bearer <AURORA_TOKEN>` kecuali /health):
+// Endpoint (auth = bearer token IF env AURORA_TOKEN is set; otherwise open — only do that on Tailnet):
 //   GET  /health                       -> { ok, version, uptime }
 //   GET  /metrics                      -> CPU, RAM, disk, load, uptime (Linux /proc; fallback degraded)
 //   POST /exec        { cmd, timeout } -> { stdout, stderr, code, durationMs }   ⚠ FREE EXEC
@@ -59,7 +62,7 @@ func main() {
 
 	token = strings.TrimSpace(os.Getenv("AURORA_TOKEN"))
 	if token == "" {
-		log.Fatal("AURORA_TOKEN env var is required (long random string).")
+		log.Printf("⚠ AURORA_TOKEN not set — auth DISABLED. Only safe behind Tailscale / private network.")
 	}
 	abs, err := filepath.Abs(*root)
 	if err != nil {
@@ -104,6 +107,11 @@ func withCORS(h http.HandlerFunc) http.HandlerFunc {
 
 func authed(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// If no token configured (Tailscale mode), skip auth.
+		if token == "" {
+			h(w, r)
+			return
+		}
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if got == "" || got != token {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid token"})

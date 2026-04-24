@@ -42,7 +42,8 @@ function normalize(url: string) {
 }
 
 export function bridgeReady(b: BridgeConfig): boolean {
-  return b.enabled && !!b.baseUrl.trim() && !!b.token.trim();
+  // Token is optional (Tailscale mode handles auth at network layer).
+  return b.enabled && !!b.baseUrl.trim();
 }
 
 async function call<T>(
@@ -55,7 +56,7 @@ async function call<T>(
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(bridge.token ? { Authorization: `Bearer ${bridge.token}` } : {}),
+      ...(bridge.token.trim() ? { Authorization: `Bearer ${bridge.token.trim()}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
