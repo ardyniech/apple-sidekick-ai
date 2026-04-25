@@ -513,3 +513,165 @@ func tailFile(w http.ResponseWriter, r *http.Request) {
 	out, _ := cmd.CombinedOutput()
 	writeJSON(w, 200, map[string]any{"content": truncate(string(out), 65536)})
 }
+
+// --- services (systemd) ---
+
+type serviceInfo struct {
+	Name        string `json:"name"`
+	Active      string `json:"active"`      // active | inactive | failed | activating | unknown
+	Sub         string `json:"sub"`         // running | dead | exited | …
+	Description string `json:"description"`
+}
+
+// listServices: parses `systemctl list-units --type=service --all --no-pager --plain --no-legend`
+func listServices(w http.ResponseWriter, r *http.Request) {
+	audit(r, "services", "list")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain", "--no-legend")
+	out, err := cmd.Output()
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"services": []serviceInfo{}, "error": "systemctl unavailable: " + err.Error()})
+		return
+	}
+	var list []serviceInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: UNIT LOAD ACTIVE SUB DESCRIPTION
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		desc := ""
+		if len(fields) >= 5 {
+			desc = strings.Join(fields[4:], " ")
+		}
+		list = append(list, serviceInfo{
+			Name:        fields[0],
+			Active:      fields[2],
+			Sub:         fields[3],
+			Description: desc,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"services": list})
+}
+
+// serviceAction: POST {name, action: start|stop|restart|status|enable|disable}
+func serviceAction(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string `json:"name"`
+		Action string `json:"action"`
+	}
+	if err := parseJSON(r, &req); err != nil {
+		writeJSON(w, 400, map[string]any{"error": "invalid body"})
+		return
+	}
+	allowed := map[string]bool{"start": true, "stop": true, "restart": true, "status": true, "enable": true, "disable": true, "reload": true}
+	if !allowed[req.Action] || strings.TrimSpace(req.Name) == "" {
+		writeJSON(w, 400, map[string]any{"error": "invalid action or name"})
+		return
+	}
+	// Reject obvious shell-injection
+	if strings.ContainsAny(req.Name, " ;|&`$<>\n") {
+		writeJSON(w, 400, map[string]any{"error": "invalid characters in name"})
+		return
+	}
+	audit(r, "service", req.Action+" "+req.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", req.Action, req.Name)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else {
+			code = -1
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": code == 0, "stdout": truncate(buf.String(), 16384), "code": code})
+}
+
+// processes: top N by CPU
+func processes(w http.ResponseWriter, r *http.Request) {
+	n := 15
+	if v := r.URL.Query().Get("n"); v != "" {
+		if k, err := strconv.Atoi(v); err == nil && k > 0 && k <= 100 {
+			n = k
+		}
+	}
+	audit(r, "processes", strconv.Itoa(n))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// ps with stable columns
+	cmd := exec.CommandContext(ctx, "ps", "-eo", "pid,user,pcpu,pmem,comm,args", "--sort=-pcpu", "--no-headers")
+	out, err := cmd.Output()
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"processes": []any{}, "error": err.Error()})
+		return
+	}
+	type p struct {
+		Pid  int     `json:"pid"`
+		User string  `json:"user"`
+		Cpu  float64 `json:"cpu"`
+		Mem  float64 `json:"mem"`
+		Comm string  `json:"comm"`
+		Args string  `json:"args"`
+	}
+	var list []p
+	for i, line := range strings.Split(string(out), "\n") {
+		if i >= n {
+			break
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		pid, _ := strconv.Atoi(fields[0])
+		cpu, _ := strconv.ParseFloat(fields[2], 64)
+		mem, _ := strconv.ParseFloat(fields[3], 64)
+		args := strings.Join(fields[5:], " ")
+		list = append(list, p{Pid: pid, User: fields[1], Cpu: cpu, Mem: mem, Comm: fields[4], Args: truncate(args, 200)})
+	}
+	writeJSON(w, 200, map[string]any{"processes": list})
+}
+
+// journal: structured journalctl tail
+func journal(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Unit  string `json:"unit"`
+		Lines int    `json:"lines"`
+	}
+	_ = parseJSON(r, &req)
+	if req.Lines <= 0 || req.Lines > 2000 {
+		req.Lines = 200
+	}
+	args := []string{"-n", strconv.Itoa(req.Lines), "--no-pager", "--output=short-iso"}
+	if strings.TrimSpace(req.Unit) != "" {
+		if strings.ContainsAny(req.Unit, " ;|&`$<>\n") {
+			writeJSON(w, 400, map[string]any{"error": "invalid unit"})
+			return
+		}
+		args = append([]string{"-u", req.Unit}, args...)
+	}
+	audit(r, "journal", strings.Join(args, " "))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "journalctl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		writeJSON(w, 200, map[string]any{"content": "", "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"content": truncate(string(out), 131072)})
+}
