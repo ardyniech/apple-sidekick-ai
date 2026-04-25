@@ -44,10 +44,6 @@ export interface AgentResult {
   steps: ReActStep[];
 }
 
-function normalizeUrl(url: string) {
-  return url.trim().replace(/\/$/, "");
-}
-
 interface OAIMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -58,15 +54,16 @@ async function rawCompletion(
   fullMessages: OAIMessage[],
   stop?: string[],
 ): Promise<string> {
-  const base = normalizeUrl(provider.apiUrl);
+  const base = normalizeProviderBase(provider);
+  const headers = {
+    "Content-Type": "application/json",
+    ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+  };
 
   if (provider.provider === "ollama") {
-    const res = await fetch(`${base}/api/chat`, {
+    const res = await proxyFetch(base, "/api/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
-      },
+      headers,
       body: JSON.stringify({
         model: provider.model,
         messages: fullMessages,
@@ -76,18 +73,15 @@ async function rawCompletion(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Ollama error ${res.status}: ${text || res.statusText}`);
+      throw new Error(`Ollama ${res.status}: ${text.slice(0, 200) || res.statusText}`);
     }
     const data = (await res.json()) as { message?: { content?: string } };
     return data.message?.content ?? "";
   }
 
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await proxyFetch(base, "/chat/completions", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
-    },
+    headers,
     body: JSON.stringify({
       model: provider.model,
       messages: fullMessages,
@@ -97,7 +91,7 @@ async function rawCompletion(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API error ${res.status}: ${text || res.statusText}`);
+    throw new Error(`API ${res.status}: ${text.slice(0, 200) || res.statusText}`);
   }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
