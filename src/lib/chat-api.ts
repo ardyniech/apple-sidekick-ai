@@ -266,61 +266,36 @@ export async function testConnection(
     return { ok: false, message: "Replace the placeholder URL first" };
   }
 
-  const base = normalizeUrl(trimmed);
+  const base = normalizeProviderBase(provider);
   const start = performance.now();
+  const headers = provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {};
 
   try {
-    if (provider.provider === "ollama") {
-      const res = await fetch(`${base}/api/tags`, {
-        headers: provider.apiKey
-          ? { Authorization: `Bearer ${provider.apiKey}` }
-          : {},
-      });
-      const latencyMs = Math.round(performance.now() - start);
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        return {
-          ok: false,
-          message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 120)}` : ""}`,
-          latencyMs,
-        };
-      }
-      const data = (await res.json()) as { models?: { name: string }[] };
-      const models = (data.models ?? []).map((m) => m.name);
-      return {
-        ok: true,
-        message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available`,
-        latencyMs,
-        models,
-      };
-    }
-
-    const res = await fetch(`${base}/models`, {
-      headers: provider.apiKey
-        ? { Authorization: `Bearer ${provider.apiKey}` }
-        : {},
-    });
+    const path = provider.provider === "ollama" ? "/api/tags" : "/models";
+    const res = await proxyFetch(base, path, { headers });
     const latencyMs = Math.round(performance.now() - start);
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       return {
         ok: false,
-        message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 120)}` : ""}`,
+        message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 140)}` : ""}`,
         latencyMs,
       };
     }
-    const data = (await res.json()) as { data?: { id: string }[] };
-    const models = (data.data ?? []).map((m) => m.id);
+    const data = await res.json();
+    const models =
+      provider.provider === "ollama"
+        ? ((data as { models?: { name: string }[] }).models ?? []).map((m) => m.name)
+        : ((data as { data?: { id: string }[] }).data ?? []).map((m) => m.id);
     return {
       ok: true,
-      message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available`,
+      message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"}`,
       latencyMs,
       models,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - start);
-    const message =
-      err instanceof Error ? err.message : "Network error (CORS or unreachable)";
+    const message = err instanceof Error ? err.message : "Network error";
     return { ok: false, message, latencyMs };
   }
 }
