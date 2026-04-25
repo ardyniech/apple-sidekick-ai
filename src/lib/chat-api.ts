@@ -1,6 +1,30 @@
 import type { ChatMessage, ReActStep, BridgeConfig } from "./store";
 import type { ProviderConfig } from "./store";
 import { getToolByName, buildReactSystemPrompt } from "./tools";
+import { proxyFetch, normalizeBaseUrl } from "./proxy";
+
+/** Strip well-known endpoint suffixes a user might paste into the Base URL,
+ * but PRESERVE the OpenAI `/v1` prefix because all OpenAI-compatible endpoints
+ * are scoped under /v1. */
+function normalizeProviderBase(provider: ProviderConfig): string {
+  if (provider.provider === "openai") {
+    return normalizeBaseUrl(provider.apiUrl, [
+      "/v1/chat/completions",
+      "/chat/completions",
+      "/v1/completions",
+      "/completions",
+      "/v1/models",
+      "/models",
+    ]);
+  }
+  // Ollama: strip any /api/* leaf
+  return normalizeBaseUrl(provider.apiUrl, [
+    "/api/chat",
+    "/api/tags",
+    "/api/generate",
+    "/api",
+  ]);
+}
 
 interface ChatParams {
   provider: ProviderConfig;
@@ -20,10 +44,6 @@ export interface AgentResult {
   steps: ReActStep[];
 }
 
-function normalizeUrl(url: string) {
-  return url.trim().replace(/\/$/, "");
-}
-
 interface OAIMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -34,15 +54,16 @@ async function rawCompletion(
   fullMessages: OAIMessage[],
   stop?: string[],
 ): Promise<string> {
-  const base = normalizeUrl(provider.apiUrl);
+  const base = normalizeProviderBase(provider);
+  const headers = {
+    "Content-Type": "application/json",
+    ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+  };
 
   if (provider.provider === "ollama") {
-    const res = await fetch(`${base}/api/chat`, {
+    const res = await proxyFetch(base, "/api/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
-      },
+      headers,
       body: JSON.stringify({
         model: provider.model,
         messages: fullMessages,
@@ -52,18 +73,15 @@ async function rawCompletion(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Ollama error ${res.status}: ${text || res.statusText}`);
+      throw new Error(`Ollama ${res.status}: ${text.slice(0, 200) || res.statusText}`);
     }
     const data = (await res.json()) as { message?: { content?: string } };
     return data.message?.content ?? "";
   }
 
-  const res = await fetch(`${base}/chat/completions`, {
+  const res = await proxyFetch(base, "/chat/completions", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
-    },
+    headers,
     body: JSON.stringify({
       model: provider.model,
       messages: fullMessages,
@@ -73,7 +91,7 @@ async function rawCompletion(
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`API error ${res.status}: ${text || res.statusText}`);
+    throw new Error(`API ${res.status}: ${text.slice(0, 200) || res.statusText}`);
   }
   const data = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
@@ -248,61 +266,36 @@ export async function testConnection(
     return { ok: false, message: "Replace the placeholder URL first" };
   }
 
-  const base = normalizeUrl(trimmed);
+  const base = normalizeProviderBase(provider);
   const start = performance.now();
+  const headers: Record<string, string> = provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {};
 
   try {
-    if (provider.provider === "ollama") {
-      const res = await fetch(`${base}/api/tags`, {
-        headers: provider.apiKey
-          ? { Authorization: `Bearer ${provider.apiKey}` }
-          : {},
-      });
-      const latencyMs = Math.round(performance.now() - start);
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        return {
-          ok: false,
-          message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 120)}` : ""}`,
-          latencyMs,
-        };
-      }
-      const data = (await res.json()) as { models?: { name: string }[] };
-      const models = (data.models ?? []).map((m) => m.name);
-      return {
-        ok: true,
-        message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available`,
-        latencyMs,
-        models,
-      };
-    }
-
-    const res = await fetch(`${base}/models`, {
-      headers: provider.apiKey
-        ? { Authorization: `Bearer ${provider.apiKey}` }
-        : {},
-    });
+    const path = provider.provider === "ollama" ? "/api/tags" : "/models";
+    const res = await proxyFetch(base, path, { headers });
     const latencyMs = Math.round(performance.now() - start);
     if (!res.ok) {
       const t = await res.text().catch(() => "");
       return {
         ok: false,
-        message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 120)}` : ""}`,
+        message: `HTTP ${res.status} ${res.statusText}${t ? ` — ${t.slice(0, 140)}` : ""}`,
         latencyMs,
       };
     }
-    const data = (await res.json()) as { data?: { id: string }[] };
-    const models = (data.data ?? []).map((m) => m.id);
+    const data = await res.json();
+    const models =
+      provider.provider === "ollama"
+        ? ((data as { models?: { name: string }[] }).models ?? []).map((m) => m.name)
+        : ((data as { data?: { id: string }[] }).data ?? []).map((m) => m.id);
     return {
       ok: true,
-      message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"} available`,
+      message: `Connected · ${models.length} model${models.length === 1 ? "" : "s"}`,
       latencyMs,
       models,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - start);
-    const message =
-      err instanceof Error ? err.message : "Network error (CORS or unreachable)";
+    const message = err instanceof Error ? err.message : "Network error";
     return { ok: false, message, latencyMs };
   }
 }

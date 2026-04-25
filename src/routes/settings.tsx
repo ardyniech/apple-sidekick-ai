@@ -213,8 +213,8 @@ function BridgeCard({
             className="font-mono text-sm"
           />
           <p className="text-[11px] text-muted-foreground">
-            Use the MagicDNS name (<code className="rounded bg-secondary/60 px-1">tailscale status</code>) or raw 100.x IP.
-            Both this browser and your server must be on the same Tailnet.
+            Tip: paste only the API ROOT — the app appends the right path itself.
+            Cloud/public URL works directly. Tailscale 100.x or MagicDNS works only when the Lovable runtime can resolve it (use a public hostname + token if it can't).
           </p>
         </Field>
 

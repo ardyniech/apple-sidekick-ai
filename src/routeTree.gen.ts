@@ -13,6 +13,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as KnowledgeRouteImport } from './routes/knowledge'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiPublicProxySplatRouteImport } from './routes/api/public/proxy/$'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -34,18 +35,25 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicProxySplatRoute = ApiPublicProxySplatRouteImport.update({
+  id: '/api/public/proxy/$',
+  path: '/api/public/proxy/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/knowledge': typeof KnowledgeRoute
   '/settings': typeof SettingsRoute
+  '/api/public/proxy/$': typeof ApiPublicProxySplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/chat': typeof ChatRoute
   '/knowledge': typeof KnowledgeRoute
   '/settings': typeof SettingsRoute
+  '/api/public/proxy/$': typeof ApiPublicProxySplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +61,20 @@ export interface FileRoutesById {
   '/chat': typeof ChatRoute
   '/knowledge': typeof KnowledgeRoute
   '/settings': typeof SettingsRoute
+  '/api/public/proxy/$': typeof ApiPublicProxySplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/knowledge' | '/settings'
+  fullPaths: '/' | '/chat' | '/knowledge' | '/settings' | '/api/public/proxy/$'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/knowledge' | '/settings'
-  id: '__root__' | '/' | '/chat' | '/knowledge' | '/settings'
+  to: '/' | '/chat' | '/knowledge' | '/settings' | '/api/public/proxy/$'
+  id:
+    | '__root__'
+    | '/'
+    | '/chat'
+    | '/knowledge'
+    | '/settings'
+    | '/api/public/proxy/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,6 +82,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRoute
   KnowledgeRoute: typeof KnowledgeRoute
   SettingsRoute: typeof SettingsRoute
+  ApiPublicProxySplatRoute: typeof ApiPublicProxySplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -99,6 +115,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/proxy/$': {
+      id: '/api/public/proxy/$'
+      path: '/api/public/proxy/$'
+      fullPath: '/api/public/proxy/$'
+      preLoaderRoute: typeof ApiPublicProxySplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -107,6 +130,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRoute,
   KnowledgeRoute: KnowledgeRoute,
   SettingsRoute: SettingsRoute,
+  ApiPublicProxySplatRoute: ApiPublicProxySplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
