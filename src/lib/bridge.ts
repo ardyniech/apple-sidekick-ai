@@ -1,10 +1,18 @@
 /**
- * Client-side helper untuk Aurora Agent Bridge.
- * Bridge adalah binary Go yang dijalankan user di server-nya, di-expose lewat
- * Cloudflare Tunnel. Semua method di sini = HTTP fetch ke endpoint bridge.
+ * Client-side helper for the Aurora Agent Bridge.
+ *
+ * All HTTP calls go through the same-origin /api/proxy/$ route so the browser
+ * doesn't run into CORS / mixed-content. The proxy forwards to bridge.baseUrl
+ * (which the user supplies — Tailscale MagicDNS, public hostname, …).
+ *
+ * Note: when the bridge is on a Tailscale-private 100.x address, the Lovable
+ * edge runtime cannot reach it. In that case the user must either:
+ *   - expose the bridge via a public DNS / tunnel + token, or
+ *   - run the web app from a device on the same Tailnet.
  */
 
 import type { BridgeConfig } from "./store";
+import { proxyFetch, normalizeBaseUrl } from "./proxy";
 
 export interface BridgeHealth {
   ok: boolean;
@@ -29,6 +37,22 @@ export interface BridgeMetrics {
   df?: string;
 }
 
+export interface ServiceInfo {
+  name: string;
+  active: string;
+  sub: string;
+  description: string;
+}
+
+export interface ProcessInfo {
+  pid: number;
+  user: string;
+  cpu: number;
+  mem: number;
+  comm: string;
+  args: string;
+}
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -37,12 +61,25 @@ export interface ExecResult {
   timedOut?: boolean;
 }
 
-function normalize(url: string) {
-  return url.trim().replace(/\/$/, "");
+const BRIDGE_SUFFIXES = [
+  "/health",
+  "/metrics",
+  "/services",
+  "/service",
+  "/processes",
+  "/journal",
+  "/exec",
+  "/read",
+  "/write",
+  "/git",
+  "/tail",
+];
+
+function bridgeBase(b: BridgeConfig): string {
+  return normalizeBaseUrl(b.baseUrl, BRIDGE_SUFFIXES);
 }
 
 export function bridgeReady(b: BridgeConfig): boolean {
-  // Token is optional (Tailscale mode handles auth at network layer).
   return b.enabled && !!b.baseUrl.trim();
 }
 
@@ -52,17 +89,14 @@ async function call<T>(
   init?: RequestInit,
 ): Promise<T> {
   if (!bridge.baseUrl.trim()) throw new Error("Agent Bridge URL is not set");
-  const res = await fetch(`${normalize(bridge.baseUrl)}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(bridge.token.trim() ? { Authorization: `Bearer ${bridge.token.trim()}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (bridge.token.trim()) headers.Authorization = `Bearer ${bridge.token.trim()}`;
+  Object.assign(headers, (init?.headers as Record<string, string>) ?? {});
+
+  const res = await proxyFetch(bridgeBase(bridge), path, { ...init, headers });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`Bridge ${res.status}: ${text.slice(0, 200) || res.statusText}`);
+    throw new Error(`Bridge ${res.status}: ${text.slice(0, 240) || res.statusText}`);
   }
   try {
     return JSON.parse(text) as T;
@@ -73,13 +107,42 @@ async function call<T>(
 
 export async function bridgeHealth(bridge: BridgeConfig): Promise<BridgeHealth> {
   if (!bridge.baseUrl.trim()) throw new Error("Agent Bridge URL is not set");
-  const res = await fetch(`${normalize(bridge.baseUrl)}/health`);
+  const res = await proxyFetch(bridgeBase(bridge), "/health");
   if (!res.ok) throw new Error(`Bridge HTTP ${res.status}`);
   return res.json();
 }
 
 export function bridgeMetrics(bridge: BridgeConfig) {
   return call<BridgeMetrics>(bridge, "/metrics");
+}
+
+export function bridgeServices(bridge: BridgeConfig) {
+  return call<{ services: ServiceInfo[]; error?: string }>(bridge, "/services");
+}
+
+export function bridgeServiceAction(
+  bridge: BridgeConfig,
+  name: string,
+  action: "start" | "stop" | "restart" | "status" | "enable" | "disable" | "reload",
+) {
+  return call<{ ok: boolean; stdout: string; code: number }>(bridge, "/service", {
+    method: "POST",
+    body: JSON.stringify({ name, action }),
+  });
+}
+
+export function bridgeProcesses(bridge: BridgeConfig, n = 15) {
+  return call<{ processes: ProcessInfo[]; error?: string }>(
+    bridge,
+    `/processes?n=${n}`,
+  );
+}
+
+export function bridgeJournal(bridge: BridgeConfig, args: { unit?: string; lines?: number }) {
+  return call<{ content: string; error?: string }>(bridge, "/journal", {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
 }
 
 export function bridgeExec(
