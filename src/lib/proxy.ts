@@ -13,7 +13,7 @@ export async function proxyFetch(
 ): Promise<Response> {
   const cleanBase = baseUrl.trim().replace(/\/+$/, "");
   const cleanPath = pathSuffix.replace(/^\/+/, "");
-  const proxyUrl = new URL(`/api/proxy/${cleanPath}`, window.location.origin);
+  const proxyUrl = new URL(`/api/public/proxy/${cleanPath}`, window.location.origin);
   if (init.searchParams) {
     Object.entries(init.searchParams).forEach(([k, v]) => proxyUrl.searchParams.set(k, v));
   }

@@ -127,7 +127,7 @@ async function proxy({ request, params }: { request: Request; params: { _splat?:
   });
 }
 
-export const Route = createFileRoute("/api/proxy/$")({
+export const Route = createFileRoute("/api/public/proxy/$")({
   server: {
     handlers: {
       OPTIONS: async () => new Response(null, { status: 204, headers: CORS }),
