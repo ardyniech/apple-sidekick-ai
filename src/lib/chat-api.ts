@@ -1,6 +1,30 @@
 import type { ChatMessage, ReActStep, BridgeConfig } from "./store";
 import type { ProviderConfig } from "./store";
 import { getToolByName, buildReactSystemPrompt } from "./tools";
+import { proxyFetch, normalizeBaseUrl } from "./proxy";
+
+/** Strip well-known endpoint suffixes a user might paste into the Base URL,
+ * but PRESERVE the OpenAI `/v1` prefix because all OpenAI-compatible endpoints
+ * are scoped under /v1. */
+function normalizeProviderBase(provider: ProviderConfig): string {
+  if (provider.provider === "openai") {
+    return normalizeBaseUrl(provider.apiUrl, [
+      "/v1/chat/completions",
+      "/chat/completions",
+      "/v1/completions",
+      "/completions",
+      "/v1/models",
+      "/models",
+    ]);
+  }
+  // Ollama: strip any /api/* leaf
+  return normalizeBaseUrl(provider.apiUrl, [
+    "/api/chat",
+    "/api/tags",
+    "/api/generate",
+    "/api",
+  ]);
+}
 
 interface ChatParams {
   provider: ProviderConfig;
