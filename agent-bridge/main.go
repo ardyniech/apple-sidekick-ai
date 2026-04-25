@@ -8,13 +8,17 @@
 //          AURORA_TOKEN="<long-random>" ./aurora-agent -addr :8787 -root /path/to/project
 //
 // Endpoint (auth = bearer token IF env AURORA_TOKEN is set; otherwise open — only do that on Tailnet):
-//   GET  /health                       -> { ok, version, uptime }
-//   GET  /metrics                      -> CPU, RAM, disk, load, uptime (Linux /proc; fallback degraded)
-//   POST /exec        { cmd, timeout } -> { stdout, stderr, code, durationMs }   ⚠ FREE EXEC
-//   POST /read        { path }         -> { content, size }
-//   POST /write       { path, content, commit?, message? } -> { bytes, commit? } ⚠ AUTO-APPLY
-//   POST /git         { args[], cwd? } -> { stdout, stderr, code }
-//   POST /tail        { path, lines }  -> { content }
+//   GET  /health                              -> { ok, version, uptime }
+//   GET  /metrics                             -> CPU, RAM, disk, load, uptime
+//   GET  /services                            -> [{ name, active, sub, description }]   (systemd)
+//   POST /service     { name, action }        -> { ok, stdout, code }                   (start/stop/restart/status)
+//   GET  /processes?n=15                      -> top N processes by CPU
+//   POST /journal     { unit?, lines? }       -> { content }                            (journalctl -u … -n …)
+//   POST /exec        { cmd, timeout }        -> { stdout, stderr, code, durationMs }   ⚠ FREE EXEC
+//   POST /read        { path }                -> { content, size }
+//   POST /write       { path, content, commit?, message? } -> { bytes, commit? }        ⚠ AUTO-APPLY
+//   POST /git         { args[], cwd? }        -> { stdout, stderr, code }
+//   POST /tail        { path, lines }         -> { content }
 //
 // Semua aksi tertulis di stdout sebagai audit log (timestamp, ip, action, args).
 package main
