@@ -268,7 +268,7 @@ export async function testConnection(
 
   const base = normalizeProviderBase(provider);
   const start = performance.now();
-  const headers = provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {};
+  const headers: Record<string, string> = provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {};
 
   try {
     const path = provider.provider === "ollama" ? "/api/tags" : "/models";
