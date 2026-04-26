@@ -1,11 +1,10 @@
-import type { ChatMessage, ReActStep, BridgeConfig } from "./store";
+import type { ChatMessage, ReActStep, BridgeConfig, MemoryContext, SafetyConfig } from "./store";
 import type { ProviderConfig } from "./store";
 import { getToolByName, buildReactSystemPrompt } from "./tools";
 import { proxyFetch, normalizeBaseUrl } from "./proxy";
+import { bridgeMetrics, bridgeServices, bridgeReady } from "./bridge";
 
-/** Strip well-known endpoint suffixes a user might paste into the Base URL,
- * but PRESERVE the OpenAI `/v1` prefix because all OpenAI-compatible endpoints
- * are scoped under /v1. */
+/** Strip well-known endpoint suffixes a user might paste into the Base URL. */
 function normalizeProviderBase(provider: ProviderConfig): string {
   if (provider.provider === "openai") {
     return normalizeBaseUrl(provider.apiUrl, [
@@ -17,7 +16,6 @@ function normalizeProviderBase(provider: ProviderConfig): string {
       "/models",
     ]);
   }
-  // Ollama: strip any /api/* leaf
   return normalizeBaseUrl(provider.apiUrl, [
     "/api/chat",
     "/api/tags",
@@ -31,17 +29,29 @@ interface ChatParams {
   bridge: BridgeConfig;
   systemPrompt: string;
   messages: ChatMessage[];
-  /** When true, run a ReAct agentic loop with tool calling. */
   agentic?: boolean;
-  /** Maximum recent messages to send (short-term memory window). */
   maxContextMessages?: number;
+  safety?: SafetyConfig;
+  /** Inject live health summary as auto-context. */
+  autoContext?: boolean;
+  /** Memories for RAG injection. */
+  memories?: MemoryContext[];
   /** Streaming-style callback as ReAct steps are produced. */
-  onStep?: (step: ReActStep) => void;
+  onStep?: (step: ReActStep, iter: number) => void;
+  /** AbortSignal to cancel mid-loop. */
+  signal?: AbortSignal;
+  /**
+   * Hook called BEFORE a mutating tool runs. Return true to proceed, false to abort.
+   * Implementations typically open a confirmation modal and resolve when user clicks.
+   */
+  onMutationConfirm?: (info: { tool: string; input: string }) => Promise<boolean>;
 }
 
 export interface AgentResult {
   finalAnswer: string;
   steps: ReActStep[];
+  iterations: number;
+  cancelled?: boolean;
 }
 
 interface OAIMessage {
@@ -53,6 +63,7 @@ async function rawCompletion(
   provider: ProviderConfig,
   fullMessages: OAIMessage[],
   stop?: string[],
+  signal?: AbortSignal,
 ): Promise<string> {
   const base = normalizeProviderBase(provider);
   const headers = {
@@ -64,6 +75,7 @@ async function rawCompletion(
     const res = await proxyFetch(base, "/api/chat", {
       method: "POST",
       headers,
+      signal,
       body: JSON.stringify({
         model: provider.model,
         messages: fullMessages,
@@ -82,6 +94,7 @@ async function rawCompletion(
   const res = await proxyFetch(base, "/chat/completions", {
     method: "POST",
     headers,
+    signal,
     body: JSON.stringify({
       model: provider.model,
       messages: fullMessages,
@@ -99,7 +112,6 @@ async function rawCompletion(
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-/** Parse a single ReAct chunk emitted by the model. */
 function parseReActChunk(text: string): {
   thought?: string;
   action?: string;
@@ -119,21 +131,85 @@ function parseReActChunk(text: string): {
   };
 }
 
-/**
- * Runs a ReAct loop: model emits Thought/Action/Action Input → we execute the
- * tool → feed back Observation → repeat until Final Answer (or max iterations).
- */
-async function runAgenticLoop({
-  provider,
-  bridge,
-  systemPrompt,
-  messages,
-  maxContextMessages = 20,
-  onStep,
-}: ChatParams): Promise<AgentResult> {
+/** Fetch live health snapshot for auto-context injection. Soft-fails. */
+async function buildAutoContext(bridge: BridgeConfig): Promise<string> {
+  if (!bridgeReady(bridge)) return "";
+  try {
+    const [m, s] = await Promise.allSettled([bridgeMetrics(bridge), bridgeServices(bridge)]);
+    const parts: string[] = [];
+    if (m.status === "fulfilled") {
+      const v = m.value;
+      parts.push(
+        `host=${v.hostname ?? "?"} cpu=${v.cpuPercent ?? "?"}% ram=${v.memPercent ?? "?"}% (${v.memUsedMB}/${v.memTotalMB}MB) load1=${v.load1 ?? "?"}`,
+      );
+    }
+    if (s.status === "fulfilled") {
+      const failed = (s.value.services ?? []).filter((x) => x.active === "failed");
+      if (failed.length > 0) {
+        parts.push(
+          `failed services (${failed.length}): ${failed.slice(0, 5).map((x) => x.name).join(", ")}`,
+        );
+      } else {
+        parts.push(`all systemd services healthy`);
+      }
+    }
+    return parts.join("\n");
+  } catch {
+    return "";
+  }
+}
+
+/** Naive keyword-based RAG: pick top-K memories matching tokens in the user query. */
+function selectRelevantMemories(query: string, memories: MemoryContext[], k = 3): MemoryContext[] {
+  if (!memories || memories.length === 0) return [];
+  const tokens = query
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter((t) => t.length > 2);
+  if (tokens.length === 0) return [];
+  const scored = memories.map((m) => {
+    const hay = `${m.title} ${m.content} ${m.tags.join(" ")}`.toLowerCase();
+    const score = tokens.reduce((acc, t) => acc + (hay.includes(t) ? 1 : 0), 0);
+    return { m, score };
+  });
+  return scored
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k)
+    .map((x) => x.m);
+}
+
+async function runAgenticLoop(params: ChatParams): Promise<AgentResult> {
+  const {
+    provider,
+    bridge,
+    systemPrompt,
+    messages,
+    maxContextMessages = 20,
+    safety,
+    autoContext,
+    memories,
+    onStep,
+    signal,
+    onMutationConfirm,
+  } = params;
+
   const trimmedHistory = messages.slice(-maxContextMessages);
+  const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+
+  const ctx = autoContext ? await buildAutoContext(bridge) : "";
+  const relevant = memories ? selectRelevantMemories(lastUser, memories, 3) : [];
+  const memBlock = relevant.length
+    ? "\n\n--- Relevant memories ---\n" +
+      relevant.map((m) => `# ${m.title}\n${m.content}`).join("\n\n") +
+      "\n--- end memories ---\n"
+    : "";
+
   const baseMessages: OAIMessage[] = [
-    { role: "system", content: `${buildReactSystemPrompt(bridge)}\n\n--- User-defined system prompt ---\n${systemPrompt}` },
+    {
+      role: "system",
+      content: `${buildReactSystemPrompt(bridge, ctx)}${memBlock}\n\n--- User-defined system prompt ---\n${systemPrompt}`,
+    },
     ...trimmedHistory.map((m): OAIMessage => ({
       role: m.role === "system" ? "system" : (m.role as "user" | "assistant"),
       content: m.content,
@@ -142,9 +218,13 @@ async function runAgenticLoop({
 
   const scratchpad: string[] = [];
   const steps: ReActStep[] = [];
-  const maxIter = 5;
+  const maxIter = Math.max(2, Math.min(20, safety?.maxIterations ?? 8));
+  let iter = 0;
 
-  for (let i = 0; i < maxIter; i++) {
+  for (iter = 0; iter < maxIter; iter++) {
+    if (signal?.aborted) {
+      return { finalAnswer: "_(cancelled by user)_", steps, iterations: iter, cancelled: true };
+    }
     const convo: OAIMessage[] = [...baseMessages];
     if (scratchpad.length) {
       convo.push({ role: "assistant", content: scratchpad.join("\n") });
@@ -154,33 +234,28 @@ async function runAgenticLoop({
       });
     }
 
-    const raw = await rawCompletion(provider, convo, ["\nObservation:"]);
+    const raw = await rawCompletion(provider, convo, ["\nObservation:"], signal);
     const parsed = parseReActChunk(raw);
 
     if (parsed.finalAnswer) {
       const step: ReActStep = { thought: parsed.thought };
       if (step.thought) {
         steps.push(step);
-        onStep?.(step);
+        onStep?.(step, iter);
       }
-      return { finalAnswer: parsed.finalAnswer, steps };
+      return { finalAnswer: parsed.finalAnswer, steps, iterations: iter + 1 };
     }
 
     const action = (parsed.action ?? "none").trim();
     const actionInput = parsed.actionInput ?? "";
-    const step: ReActStep = {
-      thought: parsed.thought,
-      action,
-      actionInput,
-    };
+    const step: ReActStep = { thought: parsed.thought, action, actionInput };
 
-    // No tool requested → ask the model to give the Final Answer next.
     if (!action || action.toLowerCase() === "none") {
       scratchpad.push(raw.trim());
       scratchpad.push("Observation: (no tool used — produce the Final Answer now)");
       step.observation = "(no tool used)";
       steps.push(step);
-      onStep?.(step);
+      onStep?.(step, iter);
       continue;
     }
 
@@ -189,6 +264,19 @@ async function runAgenticLoop({
     if (!tool) {
       observation = `Error: unknown tool "${action}".`;
     } else {
+      // Confirmation gate for mutating tools
+      if (tool.mutating && onMutationConfirm) {
+        const ok = await onMutationConfirm({ tool: tool.name, input: actionInput });
+        if (!ok) {
+          observation = "🛑 User declined this mutation. Try a non-destructive alternative.";
+          step.observation = observation;
+          steps.push(step);
+          onStep?.(step, iter);
+          scratchpad.push(raw.trim());
+          scratchpad.push(`Observation: ${observation}`);
+          continue;
+        }
+      }
       try {
         observation = await Promise.resolve(tool.run(actionInput, { bridge }));
       } catch (e) {
@@ -197,7 +285,7 @@ async function runAgenticLoop({
     }
     step.observation = observation;
     steps.push(step);
-    onStep?.(step);
+    onStep?.(step, iter);
 
     scratchpad.push(raw.trim());
     scratchpad.push(`Observation: ${observation}`);
@@ -205,26 +293,23 @@ async function runAgenticLoop({
 
   return {
     finalAnswer:
-      "_(Agent reached max iterations without producing a final answer. Try rephrasing.)_",
+      `_(Agent reached max iterations (${maxIter}) without producing a final answer. Try rephrasing or raise the limit in Settings.)_`,
     steps,
+    iterations: iter,
   };
 }
 
-/**
- * Calls the configured provider. When `agentic` is true, runs the ReAct loop
- * with tool calling. Otherwise sends a plain chat completion. Falls back to a
- * mock response when the URL is unset or still the placeholder.
- */
 export async function chatCompletion(params: ChatParams): Promise<AgentResult> {
-  const { provider, systemPrompt, messages, agentic, maxContextMessages = 20 } = params;
+  const { provider, systemPrompt, messages, agentic, maxContextMessages = 20, signal } = params;
   const trimmed = provider.apiUrl?.trim();
 
   if (!trimmed || trimmed.startsWith("https://your-tunnel")) {
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 400));
     const last = messages[messages.length - 1]?.content ?? "";
     return {
       finalAnswer: `**Demo response** — configure your API URL in Settings to connect to your real model.\n\nYou said: _${last}_`,
       steps: [],
+      iterations: 0,
     };
   }
 
@@ -240,8 +325,8 @@ export async function chatCompletion(params: ChatParams): Promise<AgentResult> {
       content: m.content,
     })),
   ];
-  const text = await rawCompletion(provider, fullMessages);
-  return { finalAnswer: text || "(empty response)", steps: [] };
+  const text = await rawCompletion(provider, fullMessages, undefined, signal);
+  return { finalAnswer: text || "(empty response)", steps: [], iterations: 1 };
 }
 
 export interface TestConnectionResult {
@@ -251,20 +336,12 @@ export interface TestConnectionResult {
   models?: string[];
 }
 
-/**
- * Verifies connectivity to the provider. For Ollama hits /api/tags. For
- * OpenAI-compatible hits /models. Returns a structured result.
- */
 export async function testConnection(
   provider: ProviderConfig,
 ): Promise<TestConnectionResult> {
   const trimmed = provider.apiUrl?.trim();
-  if (!trimmed) {
-    return { ok: false, message: "API URL is empty" };
-  }
-  if (trimmed.startsWith("https://your-tunnel")) {
-    return { ok: false, message: "Replace the placeholder URL first" };
-  }
+  if (!trimmed) return { ok: false, message: "API URL is empty" };
+  if (trimmed.startsWith("https://your-tunnel")) return { ok: false, message: "Replace the placeholder URL first" };
 
   const base = normalizeProviderBase(provider);
   const start = performance.now();
