@@ -1,6 +1,7 @@
 import { Outlet, Link, createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { MutationGateHost } from "@/components/MutationGate";
 
 import appCss from "../styles.css?url";
 
@@ -74,6 +75,7 @@ function RootComponent() {
   return (
     <TooltipProvider delayDuration={200}>
       <Outlet />
+      <MutationGateHost />
       <Toaster richColors position="top-right" />
     </TooltipProvider>
   );
