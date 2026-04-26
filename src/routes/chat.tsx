@@ -64,6 +64,34 @@ function ChatPage() {
         messages: [...messages, userMsg],
         agentic: settings.agenticMode,
         maxContextMessages: settings.maxContextMessages,
+        safety: settings.safety,
+        autoContext: settings.injectAutoContext,
+        memories: useAppStore.getState().memories,
+        onMutationConfirm: async ({ tool, input }) => {
+          if (tool === "write_file") {
+            try {
+              const parsed = JSON.parse(input) as { path?: string; content?: string };
+              if (parsed.path && typeof parsed.content === "string") {
+                const { bridgeDiff } = await import("@/lib/bridge");
+                const d = await bridgeDiff(settings.bridge, parsed.path, parsed.content);
+                const { requestMutationConfirm } = await import("@/components/MutationGate");
+                return requestMutationConfirm({
+                  kind: "write",
+                  title: `Write ${parsed.path}?`,
+                  description: "AI proposes this change. Review the diff before applying.",
+                  diff: d.diff || "(no changes)",
+                });
+              }
+            } catch { /* fall through */ }
+          }
+          const { requestMutationConfirm } = await import("@/components/MutationGate");
+          return requestMutationConfirm({
+            kind: "exec",
+            title: `Run ${tool}?`,
+            detail: input,
+            destructive: true,
+          });
+        },
       });
       addMessage({
         id: crypto.randomUUID(),

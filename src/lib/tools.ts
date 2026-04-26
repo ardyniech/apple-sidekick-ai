@@ -1,9 +1,7 @@
 /**
  * Tool registry untuk ReAct Agentic Workflow.
  *
- * Tool tipe "local" jalan di browser (calculator, get_time).
- * Tool tipe "bridge" call ke Aurora Agent Bridge (server_exec, read_file, ...).
- * Bridge tools dynamic — hanya muncul di prompt saat bridge enabled & configured.
+ * Local tools jalan di browser. Bridge tools call ke Aurora Agent Bridge.
  */
 
 import type { BridgeConfig } from "./store";
@@ -15,13 +13,17 @@ import {
   bridgeTail,
   bridgeWrite,
   bridgeReady,
+  bridgeDiff,
+  bridgeServices,
+  bridgeProcesses,
+  bridgeJournal,
 } from "./bridge";
 
 export interface ToolDefinition {
   name: string;
   description: string;
   inputHint: string;
-  /** When true, the tool mutates state on the server (write_file, git commit). */
+  /** When true, the tool mutates state on the server. */
   mutating?: boolean;
   run: (input: string, ctx: ToolContext) => Promise<string> | string;
 }
@@ -48,7 +50,7 @@ function safeCalc(expr: string): string {
 const localTools: ToolDefinition[] = [
   {
     name: "get_time",
-    description: "Return the current local date and time. Use only when the user asks for time/date.",
+    description: "Return the current local date and time.",
     inputHint: "(any string, ignored)",
     run: () => new Date().toLocaleString(undefined, { dateStyle: "full", timeStyle: "long" }),
   },
@@ -64,7 +66,8 @@ const localTools: ToolDefinition[] = [
 const bridgeTools: ToolDefinition[] = [
   {
     name: "server_metrics",
-    description: "Return live CPU%, RAM, load avg, and disk usage from the user's server. Call this first when diagnosing performance.",
+    description:
+      "Return live CPU%, RAM, load avg, and disk usage from the user's server. Call this first when diagnosing performance.",
     inputHint: "(any, ignored)",
     run: async (_input, { bridge }) => {
       const m = await bridgeMetrics(bridge);
@@ -72,12 +75,54 @@ const bridgeTools: ToolDefinition[] = [
     },
   },
   {
+    name: "list_services",
+    description: "List all systemd services with their state. Use to find failed/inactive services.",
+    inputHint: "(any, ignored)",
+    run: async (_input, { bridge }) => {
+      const r = await bridgeServices(bridge);
+      const failed = (r.services ?? []).filter((s) => s.active === "failed");
+      const head = `${r.services?.length ?? 0} services, ${failed.length} failed`;
+      const lines = (r.services ?? [])
+        .slice(0, 50)
+        .map((s) => `${s.name.padEnd(40)} ${s.active}/${s.sub}  ${s.description}`)
+        .join("\n");
+      return `${head}\n${lines}${r.error ? `\nERROR: ${r.error}` : ""}`;
+    },
+  },
+  {
+    name: "top_processes",
+    description: "Top processes by CPU. Use to find what's eating resources.",
+    inputHint: '"15"  (number of processes, default 15)',
+    run: async (input, { bridge }) => {
+      const n = Math.max(1, Math.min(50, Number(input.trim()) || 15));
+      const r = await bridgeProcesses(bridge, n);
+      const lines = (r.processes ?? [])
+        .map((p) => `${String(p.pid).padStart(6)} ${p.cpu.toFixed(1).padStart(5)}% ${p.mem.toFixed(1).padStart(5)}%  ${p.comm}  ${p.args}`)
+        .join("\n");
+      return `PID    CPU%  MEM%  COMMAND\n${lines}`;
+    },
+  },
+  {
+    name: "get_logs",
+    description: "Fetch recent journalctl logs. Filter by unit (e.g. nginx.service) or omit for all.",
+    inputHint: '{"unit":"nginx.service","lines":100}  or  {"lines":50}',
+    run: async (input, { bridge }) => {
+      let parsed: { unit?: string; lines?: number };
+      try { parsed = JSON.parse(input); } catch { parsed = { unit: input.trim() }; }
+      const r = await bridgeJournal(bridge, { unit: parsed.unit, lines: parsed.lines ?? 100 });
+      return r.content || "(no logs)";
+    },
+  },
+  {
     name: "server_exec",
     description:
-      "Run a shell command on the server (sh -c). Use for diagnostics: `git status`, `systemctl status nginx`, `docker ps`, `ls -la`, `tail -n 50 /var/log/...`. Returns stdout, stderr, exit code.",
+      "Run a shell command on the server (sh -c). Subject to safe-mode allow-list if enabled. Use for diagnostics: git status, docker ps, ls -la, tail logs. Returns stdout, stderr, exit code.",
     inputHint: "the shell command verbatim, e.g. `systemctl status myapp`",
     run: async (input, { bridge }) => {
       const r = await bridgeExec(bridge, input);
+      if (r.blocked) {
+        return `🛑 BLOCKED: ${r.reason}\n(switch bridge to free mode if you need this)`;
+      }
       return [
         `exit=${r.code} duration=${r.durationMs}ms${r.timedOut ? " (timed out)" : ""}`,
         r.stdout && `--- stdout ---\n${r.stdout}`,
@@ -89,7 +134,7 @@ const bridgeTools: ToolDefinition[] = [
   },
   {
     name: "read_file",
-    description: "Read a file from the project root on the server. Use BEFORE proposing any edit.",
+    description: "Read a file from the project root on the server. ALWAYS call before write_file.",
     inputHint: "relative path, e.g. `src/app.ts` or `package.json`",
     run: async (input, { bridge }) => {
       const r = await bridgeRead(bridge, input.trim());
@@ -97,21 +142,29 @@ const bridgeTools: ToolDefinition[] = [
     },
   },
   {
+    name: "diff_file",
+    description:
+      "Preview a write WITHOUT applying it. Returns a unified diff. ALWAYS call before write_file so the user can review.",
+    inputHint: '{"path":"src/x.ts","content":"…"}',
+    run: async (input, { bridge }) => {
+      let parsed: { path?: string; content?: string };
+      try { parsed = JSON.parse(input); } catch { return "Error: input must be JSON {path, content}"; }
+      if (!parsed.path || typeof parsed.content !== "string") return "Error: path & content required";
+      const r = await bridgeDiff(bridge, parsed.path, parsed.content);
+      if (!r.diff) return "(no changes)";
+      return `(file ${r.exists ? "exists" : "is new"})\n${r.diff}`;
+    },
+  },
+  {
     name: "write_file",
     description:
-      "Overwrite a file on the server with new content AND auto-commit it to git. ⚠ Mutating: only use after read_file confirms what to change. Input is JSON: {\"path\":\"src/x.ts\",\"content\":\"...\",\"message\":\"fix: ...\"}",
-    inputHint: '{"path":"src/x.ts","content":"...","message":"fix: bug"}',
+      "Overwrite a file AND auto-commit it to git. ⚠ Mutating: use only after diff_file shows the intended change.",
+    inputHint: '{"path":"src/x.ts","content":"…","message":"fix: bug"}',
     mutating: true,
     run: async (input, { bridge }) => {
       let parsed: { path?: string; content?: string; message?: string };
-      try {
-        parsed = JSON.parse(input);
-      } catch {
-        return "Error: input must be valid JSON with keys path, content, message.";
-      }
-      if (!parsed.path || typeof parsed.content !== "string") {
-        return "Error: 'path' and 'content' are required.";
-      }
+      try { parsed = JSON.parse(input); } catch { return "Error: input must be valid JSON"; }
+      if (!parsed.path || typeof parsed.content !== "string") return "Error: path & content required";
       const r = await bridgeWrite(bridge, {
         path: parsed.path,
         content: parsed.content,
@@ -123,7 +176,7 @@ const bridgeTools: ToolDefinition[] = [
   },
   {
     name: "git",
-    description: "Run a git command on the project repo. Input is JSON array of args, e.g. [\"log\",\"--oneline\",\"-10\"] or [\"diff\",\"HEAD~1\"].",
+    description: "Run a git command on the project repo.",
     inputHint: '["status"]  or  ["log","--oneline","-10"]',
     run: async (input, { bridge }) => {
       let args: string[];
@@ -139,16 +192,11 @@ const bridgeTools: ToolDefinition[] = [
   },
   {
     name: "tail_log",
-    description: "Tail the last N lines of a log file (or any file). Input JSON: {\"path\":\"/var/log/x.log\",\"lines\":200}",
+    description: "Tail the last N lines of a log file.",
     inputHint: '{"path":"/var/log/syslog","lines":100}',
     run: async (input, { bridge }) => {
       let parsed: { path?: string; lines?: number };
-      try {
-        parsed = JSON.parse(input);
-      } catch {
-        // fall back to plain string path
-        parsed = { path: input.trim() };
-      }
+      try { parsed = JSON.parse(input); } catch { parsed = { path: input.trim() }; }
       if (!parsed.path) return "Error: path required.";
       const r = await bridgeTail(bridge, parsed.path, parsed.lines ?? 200);
       return r.content || "(empty)";
@@ -172,7 +220,7 @@ export function buildToolsManual(bridge: BridgeConfig): string {
     .join("\n");
 }
 
-export function buildReactSystemPrompt(bridge: BridgeConfig): string {
+export function buildReactSystemPrompt(bridge: BridgeConfig, autoContext?: string): string {
   const ready = bridgeReady(bridge);
   return `You are an agentic SRE assistant that follows the ReAct (Reasoning + Acting) protocol.
 
@@ -180,6 +228,7 @@ ${ready
     ? "You ARE connected to the user's server via the Aurora Agent Bridge. Prefer real evidence (metrics, command output, file contents) over speculation."
     : "⚠ The Aurora Agent Bridge is NOT configured. You only have local tools (math, time). Tell the user to configure the bridge in Settings to give you server access."}
 
+${autoContext ? `\n--- Live server snapshot ---\n${autoContext}\n--- end snapshot ---\n` : ""}
 Available tools:
 ${buildToolsManual(bridge)}
 
@@ -200,8 +249,8 @@ Final Answer: <markdown answer to the user>
 
 Hard rules:
 - Always start with "Thought:".
-- Before write_file, you MUST read_file first in an earlier step.
-- For diagnostics, prefer server_metrics + server_exec over guessing.
+- Before write_file you MUST call diff_file FIRST in an earlier step so the user can preview.
+- For diagnostics, prefer server_metrics + list_services + top_processes + get_logs over guessing.
 - Never invent Observations.
 - Cite concrete evidence in the Final Answer (command output, file lines, exit codes).`;
 }

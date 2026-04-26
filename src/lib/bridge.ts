@@ -1,14 +1,8 @@
 /**
  * Client-side helper for the Aurora Agent Bridge.
  *
- * All HTTP calls go through the same-origin /api/proxy/$ route so the browser
- * doesn't run into CORS / mixed-content. The proxy forwards to bridge.baseUrl
- * (which the user supplies — Tailscale MagicDNS, public hostname, …).
- *
- * Note: when the bridge is on a Tailscale-private 100.x address, the Lovable
- * edge runtime cannot reach it. In that case the user must either:
- *   - expose the bridge via a public DNS / tunnel + token, or
- *   - run the web app from a device on the same Tailnet.
+ * All HTTP calls go through the same-origin /api/public/proxy/$ route so the browser
+ * doesn't run into CORS / mixed-content. The proxy forwards to bridge.baseUrl.
  */
 
 import type { BridgeConfig } from "./store";
@@ -21,6 +15,8 @@ export interface BridgeHealth {
   hostname?: string;
   os?: string;
   root?: string;
+  execMode?: "free" | "safe";
+  projectsRoot?: string;
 }
 
 export interface BridgeMetrics {
@@ -59,6 +55,31 @@ export interface ExecResult {
   code: number;
   durationMs: number;
   timedOut?: boolean;
+  blocked?: boolean;
+  reason?: string;
+}
+
+export interface DiffResult {
+  diff: string;
+  before: string;
+  after: string;
+  exists: boolean;
+}
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  hasGit: boolean;
+  active: boolean;
+}
+
+export interface ActionRecipe {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  cmd: string;
+  mutating?: boolean;
 }
 
 const BRIDGE_SUFFIXES = [
@@ -67,12 +88,18 @@ const BRIDGE_SUFFIXES = [
   "/services",
   "/service",
   "/processes",
+  "/journal/stream",
   "/journal",
   "/exec",
   "/read",
+  "/diff",
   "/write",
+  "/rollback",
   "/git",
   "/tail",
+  "/projects",
+  "/project",
+  "/actions",
 ];
 
 function bridgeBase(b: BridgeConfig): string {
@@ -163,6 +190,13 @@ export function bridgeRead(bridge: BridgeConfig, path: string) {
   });
 }
 
+export function bridgeDiff(bridge: BridgeConfig, path: string, content: string) {
+  return call<DiffResult>(bridge, "/diff", {
+    method: "POST",
+    body: JSON.stringify({ path, content }),
+  });
+}
+
 export function bridgeWrite(
   bridge: BridgeConfig,
   args: { path: string; content: string; commit?: boolean; message?: string },
@@ -171,6 +205,14 @@ export function bridgeWrite(
     bridge,
     "/write",
     { method: "POST", body: JSON.stringify(args) },
+  );
+}
+
+export function bridgeRollback(bridge: BridgeConfig, steps = 1) {
+  return call<{ ok: boolean; stdout: string; code: number; target: string }>(
+    bridge,
+    "/rollback",
+    { method: "POST", body: JSON.stringify({ steps }) },
   );
 }
 
@@ -186,4 +228,19 @@ export function bridgeTail(bridge: BridgeConfig, path: string, lines = 200) {
     method: "POST",
     body: JSON.stringify({ path, lines }),
   });
+}
+
+export function bridgeProjects(bridge: BridgeConfig) {
+  return call<{ projects: ProjectInfo[]; active?: string; note?: string }>(bridge, "/projects");
+}
+
+export function bridgeSwitchProject(bridge: BridgeConfig, path: string) {
+  return call<{ ok: boolean; active: string }>(bridge, "/project", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function bridgeActions(bridge: BridgeConfig) {
+  return call<{ actions: ActionRecipe[]; execMode: "free" | "safe" }>(bridge, "/actions");
 }

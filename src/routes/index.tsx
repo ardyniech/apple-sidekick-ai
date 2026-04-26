@@ -43,6 +43,7 @@ import {
   type ServiceInfo,
 } from "@/lib/bridge";
 import { testConnection, type TestConnectionResult } from "@/lib/chat-api";
+import { requestMutationConfirm } from "@/components/MutationGate";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -356,6 +357,16 @@ function ServicesPanel({ bridge }: { bridge: ReturnType<typeof useAppStore.getSt
   }, [load]);
 
   async function act(name: string, action: "start" | "stop" | "restart") {
+    if (action === "stop" || action === "restart") {
+      const ok = await requestMutationConfirm({
+        kind: "service",
+        title: `${action === "stop" ? "Stop" : "Restart"} ${name}?`,
+        description: `Will run: systemctl ${action} ${name}`,
+        detail: `systemctl ${action} ${name}`,
+        destructive: action === "stop",
+      });
+      if (!ok) return;
+    }
     setBusy(`${name}:${action}`);
     try {
       const r = await bridgeServiceAction(bridge, name, action);
