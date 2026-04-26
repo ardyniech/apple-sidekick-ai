@@ -66,12 +66,12 @@ const ICONS: Record<MutationKind, React.ReactNode> = {
   rollback: <RotateCcw className="h-5 w-5" />,
 };
 
-const POLICY_KEYS: Record<MutationKind, keyof import("@/lib/store").SafetyConfig> = {
+const POLICY_KEYS = {
   exec: "exec",
   write: "write",
   service: "serviceMutate",
   rollback: "rollback",
-};
+} as const satisfies Record<MutationKind, "exec" | "write" | "serviceMutate" | "rollback">;
 
 /** Mount once near the app root. */
 export function MutationGateHost() {
