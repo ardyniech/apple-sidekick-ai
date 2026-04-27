@@ -131,9 +131,10 @@ function installPatches() {
     try {
       hot.on?.("vite:beforeUpdate", () => push("before-update"));
       hot.on?.("vite:afterUpdate", () => push("after-update"));
-      hot.on?.("vite:error", (p: { err?: { message?: string } }) =>
-        push("error", p?.err?.message),
-      );
+      hot.on?.("vite:error", (p: unknown) => {
+        const msg = (p as { err?: { message?: string } } | undefined)?.err?.message;
+        push("error", msg);
+      });
       hot.on?.("vite:ws:disconnect", () => push("ws-close"));
       hot.on?.("vite:ws:connect", () => push("connected", "ws reconnected"));
     } catch {
