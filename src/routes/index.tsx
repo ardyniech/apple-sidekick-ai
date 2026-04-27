@@ -208,11 +208,13 @@ function Dashboard() {
           )}
         </Card>
 
+        {/* Always-on: dev-server diagnostics (works even if bridge is down) */}
+        <DevServerDiagnostics />
+
         {/* Cockpit: quick diagnose, services, actions, processes, live logs */}
         {ready && health.status === "ok" && (
           <>
             <QuickDiagnose />
-            <DevServerDiagnostics />
             <ServicesPanel bridge={bridge} />
             <ActionCenter />
             <div className="grid gap-6 lg:grid-cols-2">
