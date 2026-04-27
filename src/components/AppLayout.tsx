@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
+import { BridgeProfileSwitcher } from "./BridgeProfileSwitcher";
 import { useAppStore } from "@/lib/store";
 import { Cloud, Cpu } from "lucide-react";
 
@@ -27,7 +28,8 @@ export function AppLayout({ title, subtitle, children }: AppLayoutProps) {
               )}
             </div>
             <div className="ml-auto flex items-center gap-2">
-              <div className="flex items-center gap-1.5 rounded-full border border-border bg-card/50 px-2.5 py-1 text-[11px]">
+              <BridgeProfileSwitcher />
+              <div className="hidden items-center gap-1.5 rounded-full border border-border bg-card/50 px-2.5 py-1 text-[11px] sm:flex">
                 {mode === "local" ? (
                   <>
                     <Cpu className="h-3 w-3 text-success" />
