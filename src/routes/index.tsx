@@ -47,6 +47,7 @@ import { requestMutationConfirm } from "@/components/MutationGate";
 import { QuickDiagnose } from "@/components/QuickDiagnose";
 import { ActionCenter } from "@/components/ActionCenter";
 import { JournalStream } from "@/components/JournalStream";
+import { DevServerDiagnostics } from "@/components/DevServerDiagnostics";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -206,6 +207,9 @@ function Dashboard() {
             <ServerMetrics data={metrics.data} />
           )}
         </Card>
+
+        {/* Always-on: dev-server diagnostics (works even if bridge is down) */}
+        <DevServerDiagnostics />
 
         {/* Cockpit: quick diagnose, services, actions, processes, live logs */}
         {ready && health.status === "ok" && (
