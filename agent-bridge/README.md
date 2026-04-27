@@ -14,7 +14,21 @@ punya cara legal untuk eksekusi shell, baca/tulis file, atau ambil metrics nyata
 - **Tidak terbuka ke internet**: Port 8787 hanya bisa diakses device di Tailnet
   yang sama. Aman secara default.
 
-## Build
+## One-shot installer (recommended)
+
+Copy this folder to the server and run:
+
+```bash
+sudo bash agent-bridge/install.sh \
+  --port 8787 \
+  --root /home/you/my-project \
+  --projects /home/you/projects     # optional, enables project switcher
+```
+
+Installs as a `systemd` service, persistent across reboots. Edit
+`/etc/aurora-agent.env` and `systemctl restart aurora-agent` to change settings.
+
+## Manual build
 
 Butuh Go 1.21+.
 
