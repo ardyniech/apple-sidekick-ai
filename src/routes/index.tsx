@@ -47,6 +47,7 @@ import { requestMutationConfirm } from "@/components/MutationGate";
 import { QuickDiagnose } from "@/components/QuickDiagnose";
 import { ActionCenter } from "@/components/ActionCenter";
 import { JournalStream } from "@/components/JournalStream";
+import { DevServerDiagnostics } from "@/components/DevServerDiagnostics";
 
 export const Route = createFileRoute("/")({
   head: () => ({
