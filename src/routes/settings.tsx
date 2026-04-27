@@ -13,7 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useAppStore, type ModelMode, type ProviderConfig, type BridgeConfig } from "@/lib/store";
+import { Badge } from "@/components/ui/badge";
+import { useAppStore, type ModelMode, type ProviderConfig, type BridgeConfig, type ConfirmPolicy } from "@/lib/store";
 import { testConnection, type TestConnectionResult } from "@/lib/chat-api";
 import { bridgeHealth } from "@/lib/bridge";
 import {
@@ -21,16 +22,21 @@ import {
   CheckCircle2,
   Cloud,
   Cpu,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
   Loader2,
   Plug,
+  Plus,
   Save,
   Server,
+  Shield,
+  Trash2,
+  Upload,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/settings")({
