@@ -68,6 +68,8 @@ function SettingsPage() {
   return (
     <AppLayout title="Settings" subtitle="Bridge, models & agent">
       <div className="mx-auto w-full max-w-3xl space-y-5 p-6">
+        <BridgeProfilesCard />
+
         <BridgeCard bridge={draft.bridge} onChange={patchBridge} />
 
         <ProviderCard
@@ -106,7 +108,7 @@ function SettingsPage() {
         <Card className="glass-card p-6">
           <h2 className="text-base font-semibold tracking-tight">Agent & Memory</h2>
           <p className="text-xs text-muted-foreground">
-            ReAct loop and short-term memory window.
+            ReAct loop, short-term memory, and live auto-context.
           </p>
 
           <div className="mt-5 flex items-start justify-between gap-4 rounded-xl border border-border bg-secondary/30 p-4">
@@ -119,6 +121,19 @@ function SettingsPage() {
             <Switch
               checked={draft.agenticMode}
               onCheckedChange={(v) => setDraft({ ...draft, agenticMode: v })}
+            />
+          </div>
+
+          <div className="mt-3 flex items-start justify-between gap-4 rounded-xl border border-border bg-secondary/30 p-4">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Auto-context injection</Label>
+              <p className="text-xs text-muted-foreground">
+                Prepend live host metrics + failed services to every system prompt so the AI starts informed.
+              </p>
+            </div>
+            <Switch
+              checked={draft.injectAutoContext}
+              onCheckedChange={(v) => setDraft({ ...draft, injectAutoContext: v })}
             />
           </div>
 
@@ -141,7 +156,37 @@ function SettingsPage() {
               className="h-9 font-mono text-sm"
             />
           </div>
+
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-sm font-medium">Max ReAct iterations</Label>
+              <span className="font-mono text-xs text-muted-foreground">{draft.safety.maxIterations}</span>
+            </div>
+            <Input
+              type="number"
+              min={2}
+              max={20}
+              value={draft.safety.maxIterations}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  safety: {
+                    ...draft.safety,
+                    maxIterations: Math.max(2, Math.min(20, Number(e.target.value) || 8)),
+                  },
+                })
+              }
+              className="h-9 font-mono text-sm"
+            />
+          </div>
         </Card>
+
+        <SafetyCard
+          safety={draft.safety}
+          onChange={(p) => setDraft({ ...draft, safety: { ...draft.safety, ...p } })}
+        />
+
+        <ConfigIOCard />
 
         <div className="flex justify-end">
           <Button onClick={save} className="h-10 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90">
@@ -151,6 +196,235 @@ function SettingsPage() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+/* ===================== Bridge profiles ===================== */
+
+function BridgeProfilesCard() {
+  const profiles = useAppStore((s) => s.settings.bridges);
+  const activeId = useAppStore((s) => s.settings.activeBridgeId);
+  const addProfile = useAppStore((s) => s.addBridgeProfile);
+  const removeProfile = useAppStore((s) => s.removeBridgeProfile);
+  const renameProfile = useAppStore((s) => s.renameBridgeProfile);
+  const switchProfile = useAppStore((s) => s.switchBridgeProfile);
+
+  return (
+    <Card className="glass-card p-6">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary">
+            <Server className="h-4 w-4" />
+          </span>
+          <div>
+            <h2 className="text-base font-semibold tracking-tight">Bridge profiles</h2>
+            <p className="text-xs text-muted-foreground">
+              Manage multiple servers. The active one is used everywhere.
+            </p>
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const id = addProfile(`server-${profiles.length + 1}`);
+            switchProfile(id);
+            toast.success("Profile added");
+          }}
+          className="h-9 rounded-xl"
+        >
+          <Plus className="mr-1 h-3.5 w-3.5" />
+          Add profile
+        </Button>
+      </div>
+
+      {profiles.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No profiles yet. Adding one will copy the current bridge config below into a named profile.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {profiles.map((p) => (
+            <li
+              key={p.id}
+              className={`flex items-center gap-2 rounded-xl border p-3 transition-smooth ${
+                p.id === activeId
+                  ? "border-primary/50 bg-primary/5"
+                  : "border-border bg-secondary/20"
+              }`}
+            >
+              <Input
+                value={p.label}
+                onChange={(e) => renameProfile(p.id, e.target.value)}
+                className="h-8 max-w-[160px] rounded-md font-mono text-xs"
+              />
+              <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                {p.baseUrl || "(no URL — set below after switching)"}
+              </code>
+              {p.id === activeId ? (
+                <Badge className="border border-success/30 bg-success/15 text-success hover:bg-success/15">
+                  active
+                </Badge>
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    switchProfile(p.id);
+                    toast.success(`Switched to ${p.label}`);
+                  }}
+                  className="h-7 rounded-md text-[11px]"
+                >
+                  Use
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (confirm(`Delete profile "${p.label}"?`)) {
+                    removeProfile(p.id);
+                    toast.success("Profile removed");
+                  }
+                }}
+                className="h-7 rounded-md text-destructive hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/* ===================== Safety ===================== */
+
+function SafetyCard({
+  safety,
+  onChange,
+}: {
+  safety: { exec: ConfirmPolicy; write: ConfirmPolicy; serviceMutate: ConfirmPolicy; rollback: ConfirmPolicy; maxIterations: number };
+  onChange: (p: { exec?: ConfirmPolicy; write?: ConfirmPolicy; serviceMutate?: ConfirmPolicy; rollback?: ConfirmPolicy }) => void;
+}) {
+  const rows: { key: "exec" | "write" | "serviceMutate" | "rollback"; label: string; desc: string }[] = [
+    { key: "exec", label: "Shell exec", desc: "Any command run via /exec." },
+    { key: "write", label: "File writes", desc: "Editing any project file." },
+    { key: "serviceMutate", label: "Service start/stop/restart", desc: "systemctl mutations." },
+    { key: "rollback", label: "Git rollback", desc: "git reset --hard HEAD~N." },
+  ];
+  return (
+    <Card className="glass-card p-6">
+      <div className="mb-3 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-warning/15 text-warning">
+          <Shield className="h-4 w-4" />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold tracking-tight">Safety gates</h2>
+          <p className="text-xs text-muted-foreground">
+            For each mutating action: ask first, or auto-run. "Ask" is recommended.
+          </p>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {rows.map((r) => (
+          <div
+            key={r.key}
+            className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/20 p-3"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">{r.label}</div>
+              <p className="text-xs text-muted-foreground">{r.desc}</p>
+            </div>
+            <Select
+              value={safety[r.key]}
+              onValueChange={(v) => onChange({ [r.key]: v as ConfirmPolicy })}
+            >
+              <SelectTrigger className="h-8 w-24 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ask">Ask</SelectItem>
+                <SelectItem value="auto">Auto</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/* ===================== Config import/export ===================== */
+
+function ConfigIOCard() {
+  const exportConfig = useAppStore((s) => s.exportConfig);
+  const importConfig = useAppStore((s) => s.importConfig);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  function doExport() {
+    const json = exportConfig();
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `aurora-config-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Config exported");
+  }
+
+  async function doImport(file: File) {
+    const text = await file.text();
+    const r = importConfig(text);
+    if (r.ok) toast.success("Config imported — refresh recommended");
+    else toast.error(`Import failed: ${r.error}`);
+  }
+
+  return (
+    <Card className="glass-card p-6">
+      <div className="mb-3 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15 text-accent">
+          <Download className="h-4 w-4" />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold tracking-tight">Backup & restore</h2>
+          <p className="text-xs text-muted-foreground">
+            Export everything (settings, bridges, memories, chat) as JSON. Import to restore.
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" onClick={doExport} className="h-9 rounded-xl">
+          <Download className="mr-1.5 h-3.5 w-3.5" />
+          Export
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => fileRef.current?.click()}
+          className="h-9 rounded-xl"
+        >
+          <Upload className="mr-1.5 h-3.5 w-3.5" />
+          Import
+        </Button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) doImport(f);
+            e.target.value = "";
+          }}
+        />
+      </div>
+    </Card>
   );
 }
 
