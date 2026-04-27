@@ -212,6 +212,7 @@ function Dashboard() {
         {ready && health.status === "ok" && (
           <>
             <QuickDiagnose />
+            <DevServerDiagnostics />
             <ServicesPanel bridge={bridge} />
             <ActionCenter />
             <div className="grid gap-6 lg:grid-cols-2">
