@@ -44,6 +44,9 @@ import {
 } from "@/lib/bridge";
 import { testConnection, type TestConnectionResult } from "@/lib/chat-api";
 import { requestMutationConfirm } from "@/components/MutationGate";
+import { QuickDiagnose } from "@/components/QuickDiagnose";
+import { ActionCenter } from "@/components/ActionCenter";
+import { JournalStream } from "@/components/JournalStream";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -204,13 +207,15 @@ function Dashboard() {
           )}
         </Card>
 
-        {/* Cockpit: services + processes + logs */}
+        {/* Cockpit: quick diagnose, services, actions, processes, live logs */}
         {ready && health.status === "ok" && (
           <>
+            <QuickDiagnose />
             <ServicesPanel bridge={bridge} />
+            <ActionCenter />
             <div className="grid gap-6 lg:grid-cols-2">
               <ProcessesPanel bridge={bridge} />
-              <JournalPanel bridge={bridge} />
+              <JournalStream />
             </div>
           </>
         )}
