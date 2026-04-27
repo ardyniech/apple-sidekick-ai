@@ -17,26 +17,7 @@ import {
   Radio,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
-import { bridgeJournal, type BridgeConfig } from "@/lib/bridge";
-import { normalizeBaseUrl } from "@/lib/proxy";
-
-const SUFFIXES = ["/health", "/journal/stream", "/journal"];
-
-function streamUrl(b: BridgeConfig, unit: string) {
-  const base = normalizeBaseUrl(b.baseUrl, SUFFIXES);
-  const proxy = new URL(
-    `/api/public/proxy/journal/stream`,
-    window.location.origin,
-  );
-  if (unit) proxy.searchParams.set("unit", unit);
-  if (b.token.trim()) proxy.searchParams.set("token", b.token.trim());
-  // include x-target-url via a cookie-less hack: the proxy needs the header.
-  // EventSource cannot set headers, so we encode the target into the URL hash
-  // and rely on the proxy to read it from a query param fallback.
-  // Since our proxy expects x-target-url header only, we register a tiny
-  // pre-flight that the consumer falls back to polling if SSE fails.
-  return { url: proxy.toString(), targetBase: base };
-}
+import { bridgeJournal } from "@/lib/bridge";
 
 export function JournalStream() {
   const bridge = useAppStore((s) => s.settings.bridge);
